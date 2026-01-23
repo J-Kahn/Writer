@@ -18,6 +18,7 @@ writer.conf
 
 # Project notes
 PROJECT.md
+CLAUDE.md
 
 # Runtime files (stored in ~/.writer/)
 *.json
