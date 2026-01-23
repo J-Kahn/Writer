@@ -1,0 +1,39 @@
+# Writer Configuration File
+# Copy to ~/.writer/config/writer.conf and fill in your API keys
+
+[ai]
+# AI provider: "openai" or "claude"
+provider = openai
+
+# OpenAI API key (required if provider = openai)
+openai_api_key = sk-your-openai-key-here
+
+# Anthropic API key (required if provider = claude)
+anthropic_api_key = sk-ant-your-anthropic-key-here
+
+# Model settings
+openai_model = gpt-4
+claude_model = claude-sonnet-4-20250514
+
+[display]
+# Number of suggestions to show (1-5)
+suggestion_count = 3
+
+# Enable AI-enhanced outline suggestions
+outline_ai_enhance = true
+
+# Refresh interval for outline in seconds
+outline_refresh_interval = 2
+
+[editor]
+# Context lines to send for suggestions (before cursor)
+context_lines_before = 50
+
+# Context lines to send for suggestions (after cursor)
+context_lines_after = 10
+
+# Writing style prompt - describe your preferred writing style and the AI will
+# use this as additional context when generating suggestions and filling sections.
+# Example: "Write in a conversational but professional tone. Use short sentences
+# and active voice. Avoid jargon and explain technical concepts simply."
+writing_style =

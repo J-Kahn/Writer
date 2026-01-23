@@ -1,0 +1,156 @@
+#!/bin/bash
+# Writer - Vim-Based Terminal Writing Environment
+# Usage: writer <filename.md>
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_DIR="$SCRIPT_DIR/python"
+CONFIG_DIR="$HOME/.writer"
+SESSION_NAME="writer"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+show_help() {
+    echo "Writer - Vim-Based Terminal Writing Environment"
+    echo ""
+    echo "Usage: writer [options] <filename>"
+    echo ""
+    echo "Options:"
+    echo "  -h, --help     Show this help message"
+    echo "  -s, --setup    Run setup script"
+    echo "  -k, --kill     Kill existing writer session"
+    echo ""
+    echo "Keybindings:"
+    echo "  Ctrl+h/j/k/l   Navigate between tmux panes"
+    echo "  <Leader>ws     Request AI writing suggestions"
+    echo "  <Leader>wo     Force outline refresh"
+    echo "  <Leader>w1/2/3 Insert suggestion 1, 2, or 3"
+}
+
+check_deps() {
+    local missing=()
+    command -v tmux &>/dev/null || missing+=("tmux")
+    command -v vim &>/dev/null || missing+=("vim")
+    command -v python3 &>/dev/null || missing+=("python3")
+
+    if [ ${#missing[@]} -ne 0 ]; then
+        echo -e "${RED}Error: Missing dependencies: ${missing[*]}${NC}"
+        exit 1
+    fi
+
+    # Check for rich library
+    if ! python3 -c "import rich" 2>/dev/null; then
+        echo -e "${YELLOW}Installing rich library...${NC}"
+        pip install --user rich 2>/dev/null || pip3 install --user rich 2>/dev/null || true
+    fi
+}
+
+ensure_dirs() {
+    mkdir -p "$CONFIG_DIR"
+}
+
+kill_session() {
+    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        echo -e "${YELLOW}Killing existing writer session...${NC}"
+        tmux kill-session -t "$SESSION_NAME"
+        echo -e "${GREEN}Session killed.${NC}"
+    else
+        echo "No writer session running."
+    fi
+}
+
+start_writer() {
+    local filename="$1"
+
+    if [ -z "$filename" ]; then
+        echo -e "${RED}Error: No filename provided${NC}"
+        echo "Usage: writer <filename.md>"
+        exit 1
+    fi
+
+    # Create file if needed
+    if [ ! -f "$filename" ]; then
+        touch "$filename"
+        echo -e "${YELLOW}Created new file: $filename${NC}"
+    fi
+
+    # Get absolute path
+    filename="$(cd "$(dirname "$filename")" && pwd)/$(basename "$filename")"
+
+    # Attach to existing session
+    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        echo -e "${YELLOW}Attaching to existing writer session...${NC}"
+        tmux attach-session -t "$SESSION_NAME"
+        return
+    fi
+
+    echo -e "${GREEN}Starting Writer environment...${NC}"
+
+    # Layout:
+    # +----------+------------------------+----------+
+    # | OUTLINE  |                        |          |
+    # +----------+         VIM            | SUGGEST  |
+    # | REVIEW   |                        |          |
+    # +----------+------------------------+----------+
+
+    # Create session with outline panel (pane 0)
+    tmux new-session -d -s "$SESSION_NAME" -x "$(tput cols)" -y "$(tput lines)" \
+        "exec python3 '$PYTHON_DIR/outline_panel.py' '$filename'"
+
+    # Split right for vim (new pane gets 80%, outline keeps 20%)
+    tmux split-window -d -h -t "$SESSION_NAME:0.0" -p 80 \
+        "vim '+source $SCRIPT_DIR/vim/plugin/writer.vim' '+call writer#Setup(\"$PYTHON_DIR\", \"$filename\")' '$filename'"
+
+    # Split vim area for suggestions (new pane gets 25% of vim's 80% = 20%)
+    tmux split-window -d -h -t "$SESSION_NAME:0.1" -p 25 \
+        "exec python3 '$PYTHON_DIR/suggestions_panel.py' '$filename'"
+
+    # Split outline vertically for review below (new pane gets 50% of outline's height)
+    tmux split-window -d -v -t "$SESSION_NAME:0.0" -p 50 \
+        "exec python3 '$PYTHON_DIR/review_panel.py' '$filename'"
+
+    # Focus vim (pane 1)
+    tmux select-pane -t "$SESSION_NAME:0.1"
+
+    # Configure tmux
+    tmux set-option -t "$SESSION_NAME" mouse on
+    tmux set-option -t "$SESSION_NAME" pane-border-style "fg=colour238"
+    tmux set-option -t "$SESSION_NAME" pane-active-border-style "fg=colour39"
+    tmux set-option -t "$SESSION_NAME" focus-events on
+
+    # Attach
+    tmux attach-session -t "$SESSION_NAME"
+}
+
+main() {
+    case "${1:-}" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -s|--setup)
+            exec "$SCRIPT_DIR/setup.sh"
+            ;;
+        -k|--kill)
+            kill_session
+            exit 0
+            ;;
+        -*)
+            echo -e "${RED}Unknown option: $1${NC}"
+            show_help
+            exit 1
+            ;;
+        *)
+            check_deps
+            ensure_dirs
+            start_writer "$1"
+            ;;
+    esac
+}
+
+main "$@"

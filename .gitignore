@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.venv/
+
+# Config files with secrets
+writer.conf
+*.conf
+!*.conf.example
+
+# Claude Code local settings
+.claude/
+
+# Project notes
+PROJECT.md
+
+# Runtime files (stored in ~/.writer/)
+*.json
+!package.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
