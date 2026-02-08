@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Writer</title>
+<style>
+:root {
+  --bg: #1a1b26;
+  --bg-panel: #16161e;
+  --bg-hover: #292e42;
+  --border: #3b4261;
+  --text: #c0caf5;
+  --text-dim: #565f89;
+  --accent: #7aa2f7;
+  --green: #9ece6a;
+  --yellow: #e0af68;
+  --red: #f7768e;
+  --magenta: #bb9af7;
+  --cyan: #7dcfff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace; font-size: 14px; overflow: hidden; }
+
+/* Grid layout */
+.app {
+  display: grid;
+  grid-template-columns: 240px 1fr 280px;
+  grid-template-rows: 1fr 1fr;
+  height: 100vh;
+  gap: 1px;
+  background: var(--border);
+}
+.panel { background: var(--bg-panel); padding: 12px; overflow-y: auto; }
+.panel-header { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+
+#outline-panel { grid-column: 1; grid-row: 1; }
+#review-panel { grid-column: 1; grid-row: 2; }
+#editor-panel { grid-column: 2; grid-row: 1 / 3; display: flex; flex-direction: column; padding: 0; }
+#suggestions-panel { grid-column: 3; grid-row: 1 / 3; }
+
+/* Editor toolbar */
+.toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; background: var(--bg); border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--text-dim);
+}
+.toolbar .filename { color: var(--accent); cursor: pointer; }
+.toolbar .filename:hover { text-decoration: underline; }
+.toolbar .sep { color: var(--border); }
+.toolbar .status { margin-left: auto; }
+.toolbar button {
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  padding: 2px 8px; border-radius: 3px; cursor: pointer; font-family: inherit; font-size: 11px;
+}
+.toolbar button:hover { background: var(--bg-hover); color: var(--text); }
+
+/* CodeMirror container */
+.cm-container { flex: 1; overflow: hidden; }
+.cm-s-writer.CodeMirror {
+  height: 100% !important;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 15px; line-height: 1.7;
+  background: #1a1b26; color: #d5d6db;
+  padding: 10px 30px;
+}
+.cm-s-writer .CodeMirror-gutters { background: #1a1b26; border-right: none; }
+.cm-s-writer .CodeMirror-cursor { border-left: 2px solid #c0caf5; }
+.cm-s-writer .CodeMirror-selected { background: #292e42; }
+.cm-s-writer.CodeMirror-focused .CodeMirror-selected { background: #364a82; }
+.cm-s-writer .CodeMirror-activeline-background { background: #1e2030; }
+.cm-s-writer .cm-header { color: #7aa2f7; font-weight: bold; }
+.cm-s-writer .cm-header-1 { font-size: 1.4em; }
+.cm-s-writer .cm-header-2 { font-size: 1.2em; }
+.cm-s-writer .cm-strong { color: #e0af68; font-weight: bold; }
+.cm-s-writer .cm-em { color: #bb9af7; font-style: italic; }
+.cm-s-writer .cm-link { color: #7dcfff; text-decoration: underline; }
+.cm-s-writer .cm-url { color: #565f89; }
+.cm-s-writer .cm-comment { color: #565f89; }
+.cm-s-writer .cm-quote { color: #9ece6a; font-style: italic; }
+.cm-s-writer .cm-hr { color: #3b4261; }
+.cm-s-writer .cm-formatting { color: #565f89; }
+
+/* Outline */
+.outline-title { font-weight: bold; color: var(--text); margin-bottom: 2px; }
+.outline-stats { font-size: 11px; color: var(--text-dim); margin-bottom: 10px; }
+.outline-item {
+  padding: 3px 6px; cursor: pointer; border-radius: 3px; font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.outline-item:hover { background: var(--bg-hover); }
+.outline-item.current { color: var(--green); font-weight: bold; }
+.outline-item.empty { color: var(--yellow); }
+.outline-item .marker { margin-right: 4px; }
+
+/* Review */
+.review-section { margin-bottom: 12px; }
+.review-label { font-size: 11px; font-weight: bold; margin-bottom: 4px; }
+.review-label.critique { color: var(--cyan); }
+.review-label.weakness { color: var(--red); }
+.review-label.strength { color: var(--green); }
+.review-text { font-size: 13px; line-height: 1.5; color: var(--text); }
+.panel-action {
+  display: block; width: 100%; padding: 6px; margin-top: 8px;
+  background: none; border: 1px dashed var(--border); color: var(--text-dim);
+  font-family: inherit; font-size: 12px; cursor: pointer; border-radius: 3px;
+}
+.panel-action:hover { background: var(--bg-hover); color: var(--text); }
+.panel-action kbd { float: right; font-size: 10px; color: var(--text-dim); background: none; border: none; padding: 0; }
+
+/* Suggestions */
+.suggestion-mode { font-size: 11px; color: var(--magenta); margin-bottom: 8px; }
+.suggestion-card {
+  border: 1px solid var(--border); border-radius: 4px; padding: 10px;
+  margin-bottom: 8px; font-size: 13px; line-height: 1.5;
+}
+.suggestion-card:hover { border-color: var(--accent); }
+.suggestion-card .desc { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+.suggestion-card .text { color: var(--text); }
+.suggestion-card .accept-btn {
+  display: inline-block; margin-top: 6px; padding: 2px 10px;
+  background: none; border: 1px solid var(--green); color: var(--green);
+  font-family: inherit; font-size: 11px; cursor: pointer; border-radius: 3px;
+}
+.suggestion-card .accept-btn:hover { background: var(--green); color: var(--bg); }
+
+/* Loading spinner */
+.loading { color: var(--yellow); font-size: 13px; }
+.loading::after { content: ''; animation: dots 1.5s steps(4, end) infinite; }
+@keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+
+/* Hint text */
+.hint { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+.hint kbd { background: var(--bg); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border); font-size: 11px; color: var(--cyan); }
+
+/* File browser modal */
+.modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  z-index: 100; align-items: center; justify-content: center;
+}
+.modal-overlay.active { display: flex; }
+.modal {
+  background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 20px; width: 400px; max-height: 500px; overflow-y: auto;
+}
+.modal h3 { margin-bottom: 12px; color: var(--accent); font-size: 14px; }
+.modal input {
+  width: 100%; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: 13px; border-radius: 3px; margin-bottom: 10px;
+}
+.modal input:focus { outline: none; border-color: var(--accent); }
+.file-list-item {
+  padding: 6px 10px; cursor: pointer; border-radius: 3px; font-size: 13px;
+  display: flex; justify-content: space-between;
+}
+.file-list-item:hover { background: var(--bg-hover); }
+.file-list-item .meta { font-size: 11px; color: var(--text-dim); }
+.modal-actions { display: flex; gap: 8px; margin-top: 12px; }
+.modal-actions button {
+  padding: 6px 14px; border-radius: 3px; font-family: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--border);
+}
+.btn-primary { background: var(--accent); color: var(--bg); border-color: var(--accent) !important; }
+.btn-primary:hover { opacity: 0.9; }
+.btn-secondary { background: none; color: var(--text-dim); }
+.btn-secondary:hover { background: var(--bg-hover); color: var(--text); }
+.file-list-dir {
+  padding: 6px 10px; cursor: pointer; border-radius: 3px; font-size: 13px;
+  display: flex; align-items: center; gap: 6px; color: var(--accent);
+}
+.file-list-dir:hover { background: var(--bg-hover); }
+.file-list-dir .git-badge {
+  font-size: 9px; background: var(--green); color: var(--bg); padding: 1px 4px;
+  border-radius: 2px; font-weight: bold;
+}
+.breadcrumb-seg { cursor: pointer; color: var(--accent); }
+.breadcrumb-seg:hover { text-decoration: underline; }
+.breadcrumb-sep { color: var(--text-dim); margin: 0 2px; }
+.history-entry {
+  padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px;
+  display: flex; gap: 8px; align-items: baseline;
+}
+.history-entry .hash { color: var(--yellow); font-family: monospace; }
+.history-entry .msg { color: var(--text); flex: 1; }
+.history-entry .when { color: var(--text-dim); white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- Outline Panel -->
+  <div id="outline-panel" class="panel">
+    <div class="panel-header">Outline</div>
+    <div id="outline-content">
+      <div class="hint">Open a file to see its outline.</div>
+    </div>
+  </div>
+
+  <!-- Review Panel -->
+  <div id="review-panel" class="panel">
+    <div class="panel-header">Review</div>
+    <div id="review-content">
+      <div class="hint">
+        Review your prose. The AI will critique, find weaknesses, and highlight strengths.
+      </div>
+    </div>
+    <button class="panel-action" onclick="requestReview()">Review <kbd>Alt+R</kbd></button>
+  </div>
+
+  <!-- Editor Panel -->
+  <div id="editor-panel" class="panel">
+    <div class="toolbar">
+      <span class="filename" id="toolbar-filename" onclick="openFileBrowser()">No file open</span>
+      <span class="sep">|</span>
+      <button onclick="openFileBrowser()">Open</button>
+      <button onclick="newFile()">New</button>
+      <button onclick="saveNow()">Save</button>
+      <span class="sep">|</span>
+      <button onclick="showCommitDialog()">Commit</button>
+      <button onclick="showHistory()">History</button>
+      <span class="sep">|</span>
+      <button onclick="downloadFile()">Download</button>
+      <span class="status" id="toolbar-status"></span>
+    </div>
+    <div class="cm-container" id="cm-container"></div>
+  </div>
+
+  <!-- Suggestions Panel -->
+  <div id="suggestions-panel" class="panel">
+    <div class="panel-header">Suggestions</div>
+    <div id="suggestions-content">
+      <div class="hint">
+        <p>On text: alternative phrasings</p>
+        <p>On empty line: next paragraph</p>
+      </div>
+    </div>
+    <button class="panel-action" onclick="requestSuggestions()">Suggest <kbd>Alt+S</kbd></button>
+    <button class="panel-action" onclick="requestFill()">Fill Section <kbd>Alt+F</kbd></button>
+  </div>
+</div>
+
+<!-- File Browser Modal -->
+<div class="modal-overlay" id="file-modal">
+  <div class="modal">
+    <h3>Files</h3>
+    <div id="file-breadcrumb" style="font-size:12px;color:var(--text-dim);margin-bottom:8px;cursor:pointer"></div>
+    <div id="file-list"></div>
+    <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
+      <input type="text" id="new-filename" placeholder="New file name (e.g. notes.md)">
+      <div class="modal-actions">
+        <button class="btn-primary" onclick="createFile()">Create</button>
+        <button class="btn-secondary" onclick="closeFileBrowser()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Commit Modal -->
+<div class="modal-overlay" id="commit-modal">
+  <div class="modal">
+    <h3>Commit</h3>
+    <div id="commit-file" style="font-size:12px;color:var(--text-dim);margin-bottom:8px"></div>
+    <input type="text" id="commit-message" placeholder="Commit message...">
+    <div class="modal-actions">
+      <button class="btn-primary" onclick="doCommit()">Commit</button>
+      <button class="btn-secondary" onclick="closeModal('commit-modal')">Cancel</button>
+    </div>
+    <div id="commit-result" style="margin-top:8px;font-size:12px"></div>
+  </div>
+</div>
+
+<!-- History Modal -->
+<div class="modal-overlay" id="history-modal">
+  <div class="modal">
+    <h3>History</h3>
+    <div id="history-file" style="font-size:12px;color:var(--text-dim);margin-bottom:8px"></div>
+    <div id="history-list"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal('history-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- CodeMirror 5 (no ESM dedup issues) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/markdown/markdown.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/edit/continuelist.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/selection/active-line.min.js"></script>
+
+<!-- Socket.IO -->
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+<script>
+// --- State ---
+var currentFile = null;
+var editor = null;
+var socket = null;
+var saveTimeout = null;
+var outlineTimeout = null;
+
+// --- Utility ---
+function esc(str) {
+  if (!str) return '';
+  var d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// --- Socket.IO ---
+function connectSocket() {
+  socket = io(location.origin, {
+    transports: ['polling', 'websocket'],
+  });
+
+  socket.on('connect', function() {
+    document.getElementById('toolbar-status').textContent = 'connected';
+    setTimeout(function() { document.getElementById('toolbar-status').textContent = ''; }, 2000);
+  });
+
+  socket.on('outline_result', renderOutline);
+  socket.on('suggestions_result', renderSuggestions);
+  socket.on('review_result', renderReview);
+  socket.on('fill_result', handleFillResult);
+
+  socket.on('disconnect', function() {
+    document.getElementById('toolbar-status').textContent = 'disconnected';
+  });
+}
+
+// --- Editor Setup ---
+function createEditor() {
+  var container = document.getElementById('cm-container');
+  editor = CodeMirror(container, {
+    mode: 'markdown',
+    theme: 'writer',
+    lineWrapping: true,
+    lineNumbers: false,
+    styleActiveLine: true,
+    extraKeys: {
+      'Ctrl-S': function() { saveNow(); },
+      'Alt-S': function() { requestSuggestions(); },
+      'Alt-R': function() { requestReview(); },
+      'Alt-F': function() { requestFill(); },
+      'Enter': 'newlineAndIndentContinueMarkdownList',
+    },
+  });
+
+  editor.on('change', function() {
+    scheduleSave();
+    scheduleOutlineUpdate();
+  });
+}
+
+// --- File Operations ---
+function saveNow() {
+  clearTimeout(saveTimeout);
+  saveFile();
+}
+
+function downloadFile() {
+  if (!editor) return;
+  var content = editor.getValue();
+  var name = currentFile || 'document.md';
+  // Use just the filename, not path
+  var basename = name.split('/').pop();
+  var blob = new Blob([content], { type: 'text/markdown' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = basename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function scheduleSave() {
+  clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(saveFile, 1000);
+}
+
+function saveFile() {
+  if (!currentFile || !editor) return;
+  var content = editor.getValue();
+  var status = document.getElementById('toolbar-status');
+  status.textContent = 'saving...';
+  fetch('/api/files/' + encodeURIComponent(currentFile), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: content }),
+  }).then(function() {
+    status.textContent = 'saved';
+    setTimeout(function() { if (status.textContent === 'saved') status.textContent = ''; }, 1500);
+  }).catch(function() {
+    status.textContent = 'save error';
+  });
+}
+
+function openFile(filepath) {
+  fetch('/api/files/' + encodeURIComponent(filepath))
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      if (data.error) { alert(data.error); return; }
+      currentFile = filepath;
+      document.getElementById('toolbar-filename').textContent = filepath;
+      editor.setValue(data.content);
+      editor.clearHistory();
+      closeFileBrowser();
+      requestOutline();
+    })
+    .catch(function(e) {
+      alert('Failed to open file: ' + e.message);
+    });
+}
+
+// --- Outline ---
+function scheduleOutlineUpdate() {
+  clearTimeout(outlineTimeout);
+  outlineTimeout = setTimeout(requestOutline, 500);
+}
+
+function requestOutline() {
+  if (!socket || !editor) return;
+  var content = editor.getValue();
+  var cursor = editor.getCursor();
+  socket.emit('request_outline', { content: content, cursor_line: cursor.line + 1 });
+}
+
+function renderOutline(data) {
+  var el = document.getElementById('outline-content');
+  var html = '';
+
+  if (data.title) {
+    html += '<div class="outline-title">' + esc(data.title) + '</div>';
+  }
+  html += '<div class="outline-stats">' + data.word_count + ' words &middot; ' + data.line_count + ' lines</div>';
+
+  for (var i = 0; i < data.items.length; i++) {
+    var item = data.items[i];
+    if (item.item_type === 'heading') {
+      var indent = (item.level - 1) * 14;
+      var cls = 'outline-item';
+      if (item.is_current) cls += ' current';
+      if (item.is_empty) cls += ' empty';
+      var marker = item.is_empty ? '&#9671;' : (item.is_current ? '&#9656;' : '&bull;');
+      html += '<div class="' + cls + '" style="padding-left:' + (indent + 6) + 'px" onclick="jumpToLine(' + item.line_number + ')">'
+            + '<span class="marker">' + marker + '</span>' + esc(item.text)
+            + '</div>';
+    } else if (item.item_type === 'code') {
+      html += '<div class="outline-item" style="padding-left:20px;color:var(--text-dim);font-size:11px">' + esc(item.text) + '</div>';
+    }
+  }
+
+  if (data.items.length === 0) {
+    html += '<div class="hint">No headings yet. Add headings with # syntax.</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+// --- Suggestions ---
+function requestSuggestions() {
+  if (!socket || !editor) return;
+  var content = editor.getValue();
+  var cursor = editor.getCursor();
+  var lineText = editor.getLine(cursor.line);
+  socket.emit('request_suggestions', {
+    content: content,
+    cursor_line: cursor.line + 1,
+    current_line_text: lineText,
+    filename: currentFile || 'document.md',
+  });
+  document.getElementById('suggestions-content').innerHTML = '<div class="loading">Generating suggestions</div>';
+}
+
+function renderSuggestions(data) {
+  var el = document.getElementById('suggestions-content');
+  var html = '';
+
+  var modeLabel = data.mode === 'alternatives' ? 'Alternative phrasings' : 'Next paragraph';
+  html += '<div class="suggestion-mode">' + modeLabel + '</div>';
+
+  for (var i = 0; i < data.suggestions.length; i++) {
+    var s = data.suggestions[i];
+    html += '<div class="suggestion-card">';
+    html += '<div class="desc">' + esc(s.description) + '</div>';
+    html += '<div class="text">' + esc(s.text) + '</div>';
+    html += '<button class="accept-btn" onclick="acceptSuggestion(' + i + ', \'' + data.mode + '\')">Accept</button>';
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+  window._suggestions = data.suggestions;
+  window._suggestionsMode = data.mode;
+}
+
+function acceptSuggestion(index, mode) {
+  if (!editor || !window._suggestions) return;
+  var text = window._suggestions[index].text;
+  var cursor = editor.getCursor();
+
+  if (mode === 'alternatives') {
+    // Find paragraph boundaries (CM5 uses 0-indexed lines)
+    var startLine = cursor.line;
+    var endLine = cursor.line;
+
+    while (startLine > 0 && editor.getLine(startLine - 1).trim() !== '') {
+      startLine--;
+    }
+    while (endLine < editor.lineCount() - 1 && editor.getLine(endLine + 1).trim() !== '') {
+      endLine++;
+    }
+
+    var from = { line: startLine, ch: 0 };
+    var to = { line: endLine, ch: editor.getLine(endLine).length };
+    editor.replaceRange(text, from, to);
+  } else {
+    // Insert as next paragraph
+    var endCh = editor.getLine(cursor.line).length;
+    editor.replaceRange('\n\n' + text, { line: cursor.line, ch: endCh });
+  }
+  scheduleSave();
+}
+
+// --- Review ---
+function requestReview() {
+  if (!socket || !editor) return;
+  var content = editor.getValue();
+  socket.emit('request_review', { content: content });
+  document.getElementById('review-content').innerHTML = '<div class="loading">Reviewing document</div>';
+}
+
+function renderReview(data) {
+  var el = document.getElementById('review-content');
+  var html = '';
+  if (data.critique) {
+    html += '<div class="review-section"><div class="review-label critique">Critique</div><div class="review-text">' + esc(data.critique) + '</div></div>';
+  }
+  if (data.weaknesses) {
+    html += '<div class="review-section"><div class="review-label weakness">Weakness</div><div class="review-text">' + esc(data.weaknesses) + '</div></div>';
+  }
+  if (data.strengths) {
+    html += '<div class="review-section"><div class="review-label strength">Strength</div><div class="review-text">' + esc(data.strengths) + '</div></div>';
+  }
+  el.innerHTML = html;
+}
+
+// --- Fill Section ---
+function requestFill() {
+  if (!socket || !editor) return;
+  var content = editor.getValue();
+  var cursor = editor.getCursor();
+  var cursorLine = cursor.line + 1; // 1-indexed for server
+
+  var lines = content.split('\n');
+  var headings = [];
+  var currentHeading = null;
+
+  for (var i = 0; i < lines.length; i++) {
+    var m = lines[i].match(/^(#{1,6})\s+(.+)$/);
+    if (m) {
+      headings.push(m[2]);
+      if (i + 1 <= cursorLine) currentHeading = m[2];
+    }
+  }
+
+  if (!currentHeading) {
+    alert('Place cursor in a section with a heading first.');
+    return;
+  }
+
+  socket.emit('request_fill', {
+    content: content,
+    heading: currentHeading,
+    outline: headings,
+  });
+  document.getElementById('suggestions-content').innerHTML = '<div class="loading">Generating section content</div>';
+}
+
+function handleFillResult(data) {
+  var el = document.getElementById('suggestions-content');
+  var html = '<div class="suggestion-mode">Fill: ' + esc(data.heading) + '</div>';
+  html += '<div class="suggestion-card">';
+  html += '<div class="text">' + esc(data.content) + '</div>';
+  html += '<button class="accept-btn" onclick="acceptFill()">Accept</button>';
+  html += '</div>';
+  el.innerHTML = html;
+
+  window._fillContent = data.content;
+  window._fillHeading = data.heading;
+}
+
+function acceptFill() {
+  if (!editor || !window._fillContent) return;
+  var content = editor.getValue();
+  var lines = content.split('\n');
+  var heading = window._fillHeading;
+
+  // Find the heading line (0-indexed)
+  var headingLine = -1;
+  for (var i = 0; i < lines.length; i++) {
+    var m = lines[i].match(/^#{1,6}\s+(.+)$/);
+    if (m && m[1].trim() === heading.trim()) {
+      headingLine = i;
+      break;
+    }
+  }
+
+  if (headingLine === -1) return;
+
+  var endCh = editor.getLine(headingLine).length;
+  editor.replaceRange('\n\n' + window._fillContent, { line: headingLine, ch: endCh });
+  scheduleSave();
+}
+
+// --- File Browser ---
+var browseDir = '';
+
+function openFileBrowser(dir) {
+  if (dir !== undefined) browseDir = dir;
+  document.getElementById('file-modal').classList.add('active');
+  document.getElementById('new-filename').value = '';
+  loadDirectory(browseDir);
+}
+
+function loadDirectory(dir) {
+  browseDir = dir;
+  renderBreadcrumb(dir);
+  var url = '/api/files' + (dir ? '?dir=' + encodeURIComponent(dir) : '');
+  fetch(url)
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      var el = document.getElementById('file-list');
+      var entries = data.entries || [];
+      if (entries.length === 0) {
+        el.innerHTML = '<div class="hint" style="padding:8px">Empty directory.</div>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        if (e.type === 'dir') {
+          html += '<div class="file-list-dir" onclick="loadDirectory(\'' + esc(e.path) + '\')">'
+            + '<span>&#128193; ' + esc(e.name) + '</span>'
+            + (e.is_git ? '<span class="git-badge">git</span>' : '')
+            + '</div>';
+        } else {
+          html += '<div class="file-list-item" onclick="openFile(\'' + esc(e.path) + '\')">'
+            + '<span>' + esc(e.name) + '</span>'
+            + '<span class="meta">' + (e.size / 1024).toFixed(1) + 'K</span>'
+            + '</div>';
+        }
+      }
+      el.innerHTML = html;
+    })
+    .catch(function() {
+      document.getElementById('file-list').innerHTML = '<div class="hint" style="color:var(--red)">Failed to load files</div>';
+    });
+}
+
+function renderBreadcrumb(dir) {
+  var el = document.getElementById('file-breadcrumb');
+  var parts = dir ? dir.split('/') : [];
+  var html = '<span class="breadcrumb-seg" onclick="loadDirectory(\'\')">Documents</span>';
+  var path = '';
+  for (var i = 0; i < parts.length; i++) {
+    path += (i > 0 ? '/' : '') + parts[i];
+    html += '<span class="breadcrumb-sep">/</span>';
+    html += '<span class="breadcrumb-seg" onclick="loadDirectory(\'' + esc(path) + '\')">' + esc(parts[i]) + '</span>';
+  }
+  el.innerHTML = html;
+}
+
+function closeFileBrowser() {
+  document.getElementById('file-modal').classList.remove('active');
+}
+
+function createFile() {
+  var name = document.getElementById('new-filename').value.trim();
+  if (!name) return;
+  if (!name.endsWith('.md')) name += '.md';
+  var fullPath = browseDir ? browseDir + '/' + name : name;
+  fetch('/api/files/' + encodeURIComponent(fullPath), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: '# ' + name.replace('.md', '') + '\n\n' }),
+  }).then(function() {
+    openFile(fullPath);
+  }).catch(function(e) {
+    alert('Failed to create file: ' + e.message);
+  });
+}
+
+function newFile() {
+  openFileBrowser();
+  setTimeout(function() { document.getElementById('new-filename').focus(); }, 100);
+}
+
+// --- Git UI ---
+function closeModal(id) {
+  document.getElementById(id).classList.remove('active');
+}
+
+function showCommitDialog() {
+  if (!currentFile) { alert('No file open.'); return; }
+  document.getElementById('commit-file').textContent = currentFile;
+  document.getElementById('commit-message').value = '';
+  document.getElementById('commit-result').innerHTML = '';
+  document.getElementById('commit-modal').classList.add('active');
+  setTimeout(function() { document.getElementById('commit-message').focus(); }, 100);
+}
+
+function doCommit() {
+  var message = document.getElementById('commit-message').value.trim();
+  if (!message) return;
+  var resultEl = document.getElementById('commit-result');
+  resultEl.innerHTML = '<span style="color:var(--yellow)">Committing...</span>';
+
+  fetch('/api/git/commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: currentFile, message: message }),
+  })
+  .then(function(resp) { return resp.json(); })
+  .then(function(data) {
+    if (data.error) {
+      resultEl.innerHTML = '<span style="color:var(--red)">' + esc(data.error) + '</span>';
+    } else {
+      resultEl.innerHTML = '<span style="color:var(--green)">Committed!</span>';
+      setTimeout(function() { closeModal('commit-modal'); }, 1000);
+    }
+  })
+  .catch(function(e) {
+    resultEl.innerHTML = '<span style="color:var(--red)">Error: ' + esc(e.message) + '</span>';
+  });
+}
+
+function showHistory() {
+  if (!currentFile) { alert('No file open.'); return; }
+  document.getElementById('history-file').textContent = currentFile;
+  document.getElementById('history-list').innerHTML = '<span style="color:var(--yellow)">Loading...</span>';
+  document.getElementById('history-modal').classList.add('active');
+
+  fetch('/api/git/log/' + encodeURIComponent(currentFile))
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      var el = document.getElementById('history-list');
+      if (!data.is_repo) {
+        el.innerHTML = '<div class="hint">Not in a git repository.</div>';
+        return;
+      }
+      if (data.entries.length === 0) {
+        el.innerHTML = '<div class="hint">No commits yet for this file.</div>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < data.entries.length; i++) {
+        var e = data.entries[i];
+        html += '<div class="history-entry">'
+          + '<span class="hash">' + esc(e.hash) + '</span>'
+          + '<span class="msg">' + esc(e.message) + '</span>'
+          + '<span class="when">' + esc(e.when) + '</span>'
+          + '</div>';
+      }
+      el.innerHTML = html;
+    })
+    .catch(function() {
+      document.getElementById('history-list').innerHTML = '<div class="hint" style="color:var(--red)">Failed to load history</div>';
+    });
+}
+
+function jumpToLine(lineNum) {
+  if (!editor) return;
+  // lineNum is 1-indexed from server, CM5 is 0-indexed
+  editor.setCursor(lineNum - 1, 0);
+  editor.scrollIntoView(null, 100);
+  editor.focus();
+  setTimeout(requestOutline, 100);
+}
+
+// --- Init ---
+document.addEventListener('DOMContentLoaded', function() {
+  createEditor();
+  connectSocket();
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    closeFileBrowser();
+    closeModal('commit-modal');
+    closeModal('history-modal');
+  }
+  if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveNow(); }
+  if (e.altKey) {
+    if (e.key === 's') { e.preventDefault(); requestSuggestions(); }
+    if (e.key === 'r') { e.preventDefault(); requestReview(); }
+    if (e.key === 'f') { e.preventDefault(); requestFill(); }
+  }
+});
+</script>
+
+</body>
+</html>

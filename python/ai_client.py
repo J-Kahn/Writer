@@ -117,7 +117,7 @@ class OpenAIProvider(AIProvider):
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
-                max_tokens=500
+                max_completion_tokens=500
             )
 
             return self._parse_suggestions(response.choices[0].message.content, count)
@@ -167,7 +167,7 @@ Write only the section content, no heading."""
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
-                max_tokens=800
+                max_completion_tokens=800
             )
 
             return SectionContent(
@@ -213,7 +213,7 @@ STRENGTHS: [One sentence - what's working well]"""
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.6,
-                max_tokens=1000
+                max_completion_tokens=1000
             )
 
             return self._parse_review(response.choices[0].message.content)

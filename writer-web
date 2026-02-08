@@ -1,0 +1,73 @@
+#!/bin/bash
+# Writer Web - Browser-based writing environment
+# Usage: writer-web [--port PORT]
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$SCRIPT_DIR/web"
+CONFIG_DIR="$HOME/.writer/config"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+show_help() {
+    echo "Writer Web - Browser-based writing environment"
+    echo ""
+    echo "Usage: writer-web [options]"
+    echo ""
+    echo "Options:"
+    echo "  -h, --help       Show this help message"
+    echo "  -p, --port PORT  Override port (default: from config or 8080)"
+    echo ""
+    echo "Configuration: $CONFIG_DIR/writer.conf [web] section"
+    echo ""
+    echo "Keyboard shortcuts in browser:"
+    echo "  Ctrl+Shift+S    Get AI suggestions"
+    echo "  Ctrl+Shift+R    Review document"
+    echo "  Ctrl+Shift+F    Fill current section"
+}
+
+check_deps() {
+    command -v python3 &>/dev/null || { echo -e "${RED}Error: python3 not found${NC}"; exit 1; }
+
+    local missing=()
+    python3 -c "import flask" 2>/dev/null || missing+=("flask")
+    python3 -c "import flask_socketio" 2>/dev/null || missing+=("flask-socketio")
+
+    if [ ${#missing[@]} -ne 0 ]; then
+        echo -e "${YELLOW}Missing Python packages: ${missing[*]}${NC}"
+        echo -e "${YELLOW}Installing from requirements-web.txt...${NC}"
+        pip install -r "$SCRIPT_DIR/requirements-web.txt" 2>/dev/null || \
+        pip3 install -r "$SCRIPT_DIR/requirements-web.txt" 2>/dev/null || {
+            echo -e "${RED}Failed to install dependencies. Run manually:${NC}"
+            echo "  pip install -r $SCRIPT_DIR/requirements-web.txt"
+            exit 1
+        }
+    fi
+}
+
+main() {
+    case "${1:-}" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+    esac
+
+    check_deps
+
+    # Ensure config directory exists
+    mkdir -p "$HOME/.writer/config"
+
+    echo -e "${GREEN}Starting Writer Web...${NC}"
+    echo -e "${CYAN}Configure credentials in $CONFIG_DIR/writer.conf [web] section${NC}"
+    echo ""
+
+    exec python3 "$APP_DIR/app.py" "$@"
+}
+
+main "$@"

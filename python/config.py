@@ -41,11 +41,26 @@ class EditorConfig:
 
 
 @dataclass
+class WebConfig:
+    """Web interface configuration."""
+    username: str = "writer"
+    password: str = "changeme"
+    host: str = "0.0.0.0"
+    port: int = 8080
+    documents_dir: str = "~/Documents/Writer"
+
+
+@dataclass
 class WriterConfig:
     """Complete Writer configuration."""
     ai: AIConfig
     display: DisplayConfig
     editor: EditorConfig
+    web: WebConfig = None
+
+    def __post_init__(self):
+        if self.web is None:
+            self.web = WebConfig()
 
 
 def load_config() -> WriterConfig:
@@ -60,7 +75,7 @@ def load_config() -> WriterConfig:
     editor = EditorConfig()
 
     if not CONFIG_FILE.exists():
-        return WriterConfig(ai=ai, display=display, editor=editor)
+        return WriterConfig(ai=ai, display=display, editor=editor, web=WebConfig())
 
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
@@ -97,7 +112,17 @@ def load_config() -> WriterConfig:
         if editor.writing_style and not editor.writing_style.strip():
             editor.writing_style = None
 
-    return WriterConfig(ai=ai, display=display, editor=editor)
+    # Load web config
+    web = WebConfig()
+    if 'web' in config:
+        web_section = config['web']
+        web.username = web_section.get('username', web.username)
+        web.password = web_section.get('password', web.password)
+        web.host = web_section.get('host', web.host)
+        web.port = web_section.getint('port', web.port)
+        web.documents_dir = web_section.get('documents_dir', web.documents_dir)
+
+    return WriterConfig(ai=ai, display=display, editor=editor, web=web)
 
 
 def get_api_key(provider: str, config: Optional[WriterConfig] = None) -> Optional[str]:

@@ -37,3 +37,11 @@ context_lines_after = 10
 # Example: "Write in a conversational but professional tone. Use short sentences
 # and active voice. Avoid jargon and explain technical concepts simply."
 writing_style =
+
+[web]
+# Web interface settings (for writer-web)
+username = writer
+password = changeme
+host = 0.0.0.0
+port = 8080
+documents_dir = ~/Documents/Writer

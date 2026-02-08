@@ -1,0 +1,15 @@
+[Unit]
+Description=Writer Web - AI Writing Environment
+After=network.target
+
+[Service]
+Type=simple
+User=writer
+WorkingDirectory=/home/writer/Writer
+ExecStart=/home/writer/Writer/venv/bin/python /home/writer/Writer/web/app.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
