@@ -297,6 +297,7 @@ var editor = null;
 var socket = null;
 var saveTimeout = null;
 var outlineTimeout = null;
+var suppressSave = false;
 
 // --- Utility ---
 function esc(str) {
@@ -346,7 +347,7 @@ function createEditor() {
   });
 
   editor.on('change', function() {
-    scheduleSave();
+    if (!suppressSave) scheduleSave();
     scheduleOutlineUpdate();
   });
 }
@@ -381,7 +382,7 @@ function saveFile() {
   var content = editor.getValue();
   var status = document.getElementById('toolbar-status');
   status.textContent = 'saving...';
-  fetch('/api/files/' + encodeURIComponent(currentFile), {
+  fetch('/api/files/' + currentFile.split('/').map(encodeURIComponent).join('/'), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content: content }),
@@ -394,14 +395,16 @@ function saveFile() {
 }
 
 function openFile(filepath) {
-  fetch('/api/files/' + encodeURIComponent(filepath))
+  fetch('/api/files/' + filepath.split('/').map(encodeURIComponent).join('/'))
     .then(function(resp) { return resp.json(); })
     .then(function(data) {
       if (data.error) { alert(data.error); return; }
       currentFile = filepath;
       document.getElementById('toolbar-filename').textContent = filepath;
+      suppressSave = true;
       editor.setValue(data.content);
       editor.clearHistory();
+      suppressSave = false;
       closeFileBrowser();
       requestOutline();
     })
@@ -677,7 +680,7 @@ function createFile() {
   if (!name) return;
   if (!name.endsWith('.md')) name += '.md';
   var fullPath = browseDir ? browseDir + '/' + name : name;
-  fetch('/api/files/' + encodeURIComponent(fullPath), {
+  fetch('/api/files/' + fullPath.split('/').map(encodeURIComponent).join('/'), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content: '# ' + name.replace('.md', '') + '\n\n' }),
