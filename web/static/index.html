@@ -431,6 +431,24 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
         <button class="btn-secondary" onclick="closeFileBrowser()">Cancel</button>
       </div>
     </div>
+    <!-- Git controls -->
+    <div id="git-controls" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;display:none">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:8px">Git</div>
+      <div id="git-no-repo">
+        <button class="btn-primary" onclick="initGitRepo()" style="width:100%">Init Git Repository</button>
+      </div>
+      <div id="git-repo-info" style="display:none">
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">
+          Branch: <span id="git-branch" style="color:var(--green)"></span>
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:6px">
+          <input type="text" id="git-remote-url" placeholder="Remote URL (e.g. git@github.com:...)" style="flex:1;margin-bottom:0">
+          <button class="btn-primary" onclick="setGitRemote()" style="white-space:nowrap">Set</button>
+        </div>
+        <button class="btn-secondary" onclick="gitPush()" style="width:100%;border-style:solid">Push</button>
+        <div id="git-result" style="margin-top:6px;font-size:12px"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1131,24 +1149,25 @@ function loadDirectory(dir) {
       var entries = data.entries || [];
       if (entries.length === 0) {
         el.innerHTML = '<div class="hint" style="padding:8px">Empty directory.</div>';
-        return;
-      }
-      var html = '';
-      for (var i = 0; i < entries.length; i++) {
-        var e = entries[i];
-        if (e.type === 'dir') {
-          html += '<div class="file-list-dir" onclick="loadDirectory(\'' + esc(e.path) + '\')">'
-            + '<span>&#128193; ' + esc(e.name) + '</span>'
-            + (e.is_git ? '<span class="git-badge">git</span>' : '')
-            + '</div>';
-        } else {
-          html += '<div class="file-list-item" onclick="openFile(\'' + esc(e.path) + '\')">'
-            + '<span>' + esc(e.name) + '</span>'
-            + '<span class="meta">' + (e.size / 1024).toFixed(1) + 'K</span>'
-            + '</div>';
+      } else {
+        var html = '';
+        for (var i = 0; i < entries.length; i++) {
+          var e = entries[i];
+          if (e.type === 'dir') {
+            html += '<div class="file-list-dir" onclick="loadDirectory(\'' + esc(e.path) + '\')">'
+              + '<span>&#128193; ' + esc(e.name) + '</span>'
+              + (e.is_git ? '<span class="git-badge">git</span>' : '')
+              + '</div>';
+          } else {
+            html += '<div class="file-list-item" onclick="openFile(\'' + esc(e.path) + '\')">'
+              + '<span>' + esc(e.name) + '</span>'
+              + '<span class="meta">' + (e.size / 1024).toFixed(1) + 'K</span>'
+              + '</div>';
+          }
         }
+        el.innerHTML = html;
       }
-      el.innerHTML = html;
+      loadGitInfo(dir);
     })
     .catch(function() {
       document.getElementById('file-list').innerHTML = '<div class="hint" style="color:var(--red)">Failed to load files</div>';
@@ -1185,6 +1204,98 @@ function createFile() {
     openFile(fullPath);
   }).catch(function(e) {
     alert('Failed to create file: ' + e.message);
+  });
+}
+
+// --- Git Controls in File Browser ---
+function loadGitInfo(dir) {
+  var url = '/api/git/info' + (dir ? '?dir=' + encodeURIComponent(dir) : '');
+  fetch(url)
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      var controls = document.getElementById('git-controls');
+      var noRepo = document.getElementById('git-no-repo');
+      var repoInfo = document.getElementById('git-repo-info');
+      var resultEl = document.getElementById('git-result');
+      controls.style.display = '';
+      resultEl.innerHTML = '';
+
+      if (data.is_repo) {
+        noRepo.style.display = 'none';
+        repoInfo.style.display = '';
+        document.getElementById('git-branch').textContent = data.branch || 'main';
+        document.getElementById('git-remote-url').value = data.remote || '';
+      } else {
+        noRepo.style.display = '';
+        repoInfo.style.display = 'none';
+      }
+    })
+    .catch(function() {
+      document.getElementById('git-controls').style.display = 'none';
+    });
+}
+
+function initGitRepo() {
+  var resultEl = document.getElementById('git-result');
+  fetch('/api/git/init', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir: browseDir }),
+  })
+  .then(function(resp) { return resp.json(); })
+  .then(function(data) {
+    if (data.error) {
+      alert(data.error);
+    } else {
+      loadGitInfo(browseDir);
+    }
+  })
+  .catch(function(e) { alert('Failed to init: ' + e.message); });
+}
+
+function setGitRemote() {
+  var url = document.getElementById('git-remote-url').value.trim();
+  if (!url) return;
+  var resultEl = document.getElementById('git-result');
+  resultEl.innerHTML = '<span style="color:var(--yellow)">Setting remote...</span>';
+  fetch('/api/git/remote', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir: browseDir, url: url }),
+  })
+  .then(function(resp) { return resp.json(); })
+  .then(function(data) {
+    if (data.error) {
+      resultEl.innerHTML = '<span style="color:var(--red)">' + esc(data.error) + '</span>';
+    } else {
+      resultEl.innerHTML = '<span style="color:var(--green)">Remote set</span>';
+      setTimeout(function() { resultEl.innerHTML = ''; }, 2000);
+    }
+  })
+  .catch(function(e) {
+    resultEl.innerHTML = '<span style="color:var(--red)">Error: ' + esc(e.message) + '</span>';
+  });
+}
+
+function gitPush() {
+  var resultEl = document.getElementById('git-result');
+  resultEl.innerHTML = '<span style="color:var(--yellow)">Pushing...</span>';
+  fetch('/api/git/push', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir: browseDir }),
+  })
+  .then(function(resp) { return resp.json(); })
+  .then(function(data) {
+    if (data.error) {
+      resultEl.innerHTML = '<span style="color:var(--red)">' + esc(data.error) + '</span>';
+    } else {
+      resultEl.innerHTML = '<span style="color:var(--green)">Pushed!</span>';
+      setTimeout(function() { resultEl.innerHTML = ''; }, 2000);
+    }
+  })
+  .catch(function(e) {
+    resultEl.innerHTML = '<span style="color:var(--red)">Error: ' + esc(e.message) + '</span>';
   });
 }
 

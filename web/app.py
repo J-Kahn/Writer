@@ -275,6 +275,82 @@ def git_init():
     return jsonify({"error": out}), 500
 
 
+@app.route("/api/git/info", methods=["GET"])
+@requires_auth
+def git_info():
+    """Get git info (repo status, remote, branch) for a directory."""
+    subdir = request.args.get("dir", "")
+    target = safe_path(subdir) if subdir else documents_dir
+    if target is None or not target.is_dir():
+        return jsonify({"is_repo": False})
+
+    git_root = _find_git_root(target)
+    if not git_root:
+        return jsonify({"is_repo": False})
+
+    ok_r, remote = _git_run(git_root, "remote", "get-url", "origin")
+    ok_b, branch = _git_run(git_root, "symbolic-ref", "--short", "HEAD")
+
+    return jsonify({
+        "is_repo": True,
+        "remote": remote if ok_r else "",
+        "branch": branch if ok_b else "main",
+    })
+
+
+@app.route("/api/git/remote", methods=["POST"])
+@requires_auth
+def git_set_remote():
+    """Set or update the remote origin URL."""
+    data = request.get_json()
+    subdir = data.get("dir", "")
+    url = data.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "URL required"}), 400
+
+    target = safe_path(subdir) if subdir else documents_dir
+    if target is None:
+        return jsonify({"error": "Invalid directory"}), 400
+
+    git_root = _find_git_root(target)
+    if not git_root:
+        return jsonify({"error": "Not a git repository"}), 400
+
+    # Check if remote already exists
+    ok, _ = _git_run(git_root, "remote", "get-url", "origin")
+    if ok:
+        ok, out = _git_run(git_root, "remote", "set-url", "origin", url)
+    else:
+        ok, out = _git_run(git_root, "remote", "add", "origin", url)
+
+    if ok:
+        return jsonify({"status": "ok"})
+    return jsonify({"error": out}), 400
+
+
+@app.route("/api/git/push", methods=["POST"])
+@requires_auth
+def git_push():
+    """Push current branch to remote origin."""
+    data = request.get_json()
+    subdir = data.get("dir", "")
+    target = safe_path(subdir) if subdir else documents_dir
+    if target is None:
+        return jsonify({"error": "Invalid directory"}), 400
+
+    git_root = _find_git_root(target)
+    if not git_root:
+        return jsonify({"error": "Not a git repository"}), 400
+
+    ok_b, branch = _git_run(git_root, "symbolic-ref", "--short", "HEAD")
+    branch = branch if ok_b else "main"
+
+    ok, out = _git_run(git_root, "push", "-u", "origin", branch)
+    if ok:
+        return jsonify({"status": "ok", "message": out or "Pushed successfully"})
+    return jsonify({"error": out}), 400
+
+
 # --- WebSocket Events ---
 
 def register_socket_events(socketio):
