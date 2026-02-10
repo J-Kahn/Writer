@@ -17,7 +17,7 @@ from flask import Flask, request, jsonify, send_from_directory, Response
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
 from config import load_config
-from ai_client import create_provider, WritingContext, extract_paragraphs
+from ai_client import create_provider, WritingContext, extract_paragraphs, ChatMessage
 from document_parser import parse_markdown, get_current_section
 
 app = Flask(__name__, static_folder="static")
@@ -425,6 +425,50 @@ def register_socket_events(socketio):
                 }, to=sid)
 
         socketio.start_background_task(do_fill)
+
+    @socketio.on("request_chat")
+    def handle_chat(data):
+        """Handle chat messages in background thread."""
+        sid = request.sid
+
+        def do_chat():
+            document = data.get("document", "")
+            raw_messages = data.get("messages", [])
+            messages = [ChatMessage(role=m["role"], content=m["content"]) for m in raw_messages]
+
+            try:
+                response = ai_provider.chat(document, messages)
+            except Exception as e:
+                response = f"[Error: {e}]"
+
+            socketio.emit("chat_result", {"response": response}, to=sid)
+
+        socketio.start_background_task(do_chat)
+
+    @socketio.on("request_inline_complete")
+    def handle_inline_complete(data):
+        """Handle inline autocomplete in background thread."""
+        sid = request.sid
+
+        def do_inline_complete():
+            document = data.get("document", "")
+            cursor_line = data.get("cursor_line", 0)
+            cursor_ch = data.get("cursor_ch", 0)
+            request_id = data.get("request_id", 0)
+
+            try:
+                text = ai_provider.inline_complete(document, cursor_line, cursor_ch)
+            except Exception as e:
+                text = ""
+
+            socketio.emit("inline_complete_result", {
+                "text": text,
+                "request_id": request_id,
+                "cursor_line": cursor_line,
+                "cursor_ch": cursor_ch,
+            }, to=sid)
+
+        socketio.start_background_task(do_inline_complete)
 
 
 def _is_section_empty(item, lines):

@@ -39,11 +39,17 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 #editor-panel { grid-column: 2; grid-row: 1 / 3; display: flex; flex-direction: column; padding: 0; }
 #suggestions-panel { grid-column: 3; grid-row: 1 / 3; }
 
+/* Focus mode */
+.app.focus-mode { grid-template-columns: 1fr; }
+.app.focus-mode #outline-panel,
+.app.focus-mode #review-panel,
+.app.focus-mode #suggestions-panel { display: none; }
+
 /* Editor toolbar */
 .toolbar {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 12px; background: var(--bg); border-bottom: 1px solid var(--border);
-  font-size: 12px; color: var(--text-dim);
+  font-size: 12px; color: var(--text-dim); flex-wrap: wrap;
 }
 .toolbar .filename { color: var(--accent); cursor: pointer; }
 .toolbar .filename:hover { text-decoration: underline; }
@@ -54,6 +60,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   padding: 2px 8px; border-radius: 3px; cursor: pointer; font-family: inherit; font-size: 11px;
 }
 .toolbar button:hover { background: var(--bg-hover); color: var(--text); }
+.toolbar button.active { border-color: var(--accent); color: var(--accent); }
 
 /* CodeMirror container */
 .cm-container { flex: 1; overflow: hidden; }
@@ -80,6 +87,46 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .cm-s-writer .cm-quote { color: #9ece6a; font-style: italic; }
 .cm-s-writer .cm-hr { color: #3b4261; }
 .cm-s-writer .cm-formatting { color: #565f89; }
+
+/* CodeMirror search dialog dark theme */
+.CodeMirror-dialog {
+  background: var(--bg) !important;
+  color: var(--text) !important;
+  border-bottom: 1px solid var(--border) !important;
+  padding: 4px 8px !important;
+  font-family: inherit !important;
+  font-size: 13px !important;
+}
+.CodeMirror-dialog input {
+  background: var(--bg-panel) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 3px !important;
+  padding: 2px 6px !important;
+  font-family: inherit !important;
+  font-size: 13px !important;
+  outline: none !important;
+}
+.CodeMirror-dialog input:focus { border-color: var(--accent) !important; }
+.CodeMirror-dialog button {
+  background: none !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-dim) !important;
+  padding: 2px 8px !important;
+  border-radius: 3px !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  margin-left: 4px !important;
+}
+.CodeMirror-dialog button:hover { background: var(--bg-hover) !important; color: var(--text) !important; }
+
+/* Ghost text for inline autocomplete */
+.ghost-text {
+  color: var(--text-dim);
+  opacity: 0.4;
+  font-style: italic;
+  pointer-events: none;
+}
 
 /* Outline */
 .outline-title { font-weight: bold; color: var(--text); margin-bottom: 2px; }
@@ -123,6 +170,42 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   font-family: inherit; font-size: 11px; cursor: pointer; border-radius: 3px;
 }
 .suggestion-card .accept-btn:hover { background: var(--green); color: var(--bg); }
+
+/* Right panel tab system (Suggestions / Chat) */
+.right-tabs {
+  display: flex; gap: 0; margin-bottom: 10px; border-bottom: 1px solid var(--border);
+}
+.right-tab {
+  flex: 1; padding: 6px 0; text-align: center; cursor: pointer;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-dim); border-bottom: 2px solid transparent;
+}
+.right-tab:hover { color: var(--text); }
+.right-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Chat panel */
+.chat-container { display: flex; flex-direction: column; height: calc(100% - 40px); }
+.chat-messages {
+  flex: 1; overflow-y: auto; padding-bottom: 8px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.chat-msg {
+  padding: 8px 10px; border-radius: 6px; font-size: 13px; line-height: 1.5;
+  max-width: 95%; word-wrap: break-word;
+}
+.chat-msg.user { background: var(--bg-hover); align-self: flex-end; color: var(--text); }
+.chat-msg.assistant { background: var(--bg); align-self: flex-start; color: var(--text); border: 1px solid var(--border); }
+.chat-input-row { display: flex; gap: 6px; margin-top: 8px; }
+.chat-input-row input {
+  flex: 1; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: 13px; border-radius: 3px;
+}
+.chat-input-row input:focus { outline: none; border-color: var(--accent); }
+.chat-input-row button {
+  padding: 6px 12px; background: var(--accent); color: var(--bg); border: none;
+  border-radius: 3px; cursor: pointer; font-family: inherit; font-size: 12px;
+}
+.chat-input-row button:hover { opacity: 0.9; }
 
 /* Loading spinner */
 .loading { color: var(--yellow); font-size: 13px; }
@@ -182,9 +265,68 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .history-entry .hash { color: var(--yellow); font-family: monospace; }
 .history-entry .msg { color: var(--text); flex: 1; }
 .history-entry .when { color: var(--text-dim); white-space: nowrap; }
+
+/* Print / PDF export */
+#print-container { display: none; }
+@media print {
+  body { background: white !important; color: black !important; overflow: visible !important; }
+  .app, .toolbar, .modal-overlay, #outline-panel, #review-panel, #suggestions-panel, .mobile-tabs { display: none !important; }
+  #print-container {
+    display: block !important; padding: 20px 40px; font-family: Georgia, 'Times New Roman', serif;
+    font-size: 12pt; line-height: 1.8; color: black; max-width: 100%;
+  }
+  #print-container h1 { font-size: 22pt; margin-bottom: 12pt; }
+  #print-container h2 { font-size: 18pt; margin-top: 18pt; margin-bottom: 8pt; }
+  #print-container h3 { font-size: 14pt; margin-top: 14pt; margin-bottom: 6pt; }
+  #print-container p { margin-bottom: 8pt; }
+  #print-container blockquote { border-left: 3px solid #ccc; padding-left: 12px; color: #555; }
+  #print-container code { background: #f0f0f0; padding: 1px 4px; border-radius: 2px; font-size: 10pt; }
+  #print-container pre { background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto; }
+}
+
+/* Mobile responsive */
+.mobile-tabs {
+  display: none;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+  overflow-x: auto; white-space: nowrap;
+}
+.mobile-tab {
+  display: inline-block; padding: 8px 14px; font-size: 12px; color: var(--text-dim);
+  cursor: pointer; border-bottom: 2px solid transparent; text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.mobile-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+@media (max-width: 768px) {
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  #outline-panel, #review-panel, #suggestions-panel { display: none; grid-column: 1; grid-row: 2; }
+  #editor-panel { grid-column: 1; grid-row: 2; }
+  .app .panel.mobile-active {
+    display: block; position: fixed; inset: 0; z-index: 50;
+    background: var(--bg-panel); padding: 12px; overflow-y: auto;
+    top: 36px; /* below mobile tab bar */
+  }
+  .mobile-tabs { display: flex; grid-column: 1; grid-row: 1; }
+  .toolbar { font-size: 11px; gap: 4px; padding: 4px 8px; }
+  .toolbar button { padding: 2px 6px; font-size: 10px; }
+  .cm-s-writer.CodeMirror { font-size: 14px; padding: 8px 12px; }
+  .modal { width: 90vw; }
+}
 </style>
 </head>
 <body>
+
+<!-- Mobile tab bar -->
+<div class="mobile-tabs" id="mobile-tabs">
+  <div class="mobile-tab active" onclick="showMobilePanel('editor')">Editor</div>
+  <div class="mobile-tab" onclick="showMobilePanel('outline')">Outline</div>
+  <div class="mobile-tab" onclick="showMobilePanel('suggest')">Suggest</div>
+  <div class="mobile-tab" onclick="showMobilePanel('review')">Review</div>
+  <div class="mobile-tab" onclick="showMobilePanel('chat')">Chat</div>
+</div>
 
 <div class="app">
   <!-- Outline Panel -->
@@ -215,28 +357,57 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
       <button onclick="newFile()">New</button>
       <button onclick="saveNow()">Save</button>
       <span class="sep">|</span>
+      <button onclick="triggerImport()">Import</button>
+      <button onclick="exportPDF()">PDF</button>
+      <button onclick="exportDOCX()">DOCX</button>
+      <button onclick="downloadFile()">Download</button>
+      <span class="sep">|</span>
       <button onclick="showCommitDialog()">Commit</button>
       <button onclick="showHistory()">History</button>
       <span class="sep">|</span>
-      <button onclick="downloadFile()">Download</button>
+      <button id="focus-btn" onclick="toggleFocusMode()">Focus</button>
       <span class="status" id="toolbar-status"></span>
     </div>
     <div class="cm-container" id="cm-container"></div>
   </div>
 
-  <!-- Suggestions Panel -->
+  <!-- Suggestions Panel (with tabs for Suggestions / Chat) -->
   <div id="suggestions-panel" class="panel">
-    <div class="panel-header">Suggestions</div>
-    <div id="suggestions-content">
-      <div class="hint">
-        <p>On text: alternative phrasings</p>
-        <p>On empty line: next paragraph</p>
+    <div class="right-tabs">
+      <div class="right-tab active" id="tab-suggestions" onclick="switchRightTab('suggestions')">Suggestions</div>
+      <div class="right-tab" id="tab-chat" onclick="switchRightTab('chat')">Chat</div>
+    </div>
+    <!-- Suggestions content -->
+    <div id="suggestions-view">
+      <div id="suggestions-content">
+        <div class="hint">
+          <p>On text: alternative phrasings</p>
+          <p>On empty line: next paragraph</p>
+        </div>
+      </div>
+      <button class="panel-action" onclick="requestSuggestions()">Suggest <kbd>Alt+S</kbd></button>
+      <button class="panel-action" onclick="requestFill()">Fill Section <kbd>Alt+F</kbd></button>
+    </div>
+    <!-- Chat content -->
+    <div id="chat-view" style="display:none;height:calc(100% - 40px)">
+      <div class="chat-container">
+        <div class="chat-messages" id="chat-messages">
+          <div class="hint">Ask questions about your document. The AI has context of what you're writing.</div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="chat-input" placeholder="Ask about your document..." onkeydown="if(event.key==='Enter')sendChat()">
+          <button onclick="sendChat()">Send</button>
+        </div>
       </div>
     </div>
-    <button class="panel-action" onclick="requestSuggestions()">Suggest <kbd>Alt+S</kbd></button>
-    <button class="panel-action" onclick="requestFill()">Fill Section <kbd>Alt+F</kbd></button>
   </div>
 </div>
+
+<!-- Hidden file input for import -->
+<input type="file" id="import-input" accept=".txt,.md,.docx" style="display:none" onchange="handleImport(event)">
+
+<!-- Print container for PDF export -->
+<div id="print-container"></div>
 
 <!-- File Browser Modal -->
 <div class="modal-overlay" id="file-modal">
@@ -280,15 +451,26 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   </div>
 </div>
 
-<!-- CodeMirror 5 (no ESM dedup issues) -->
+<!-- CodeMirror 5 -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/markdown/markdown.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/edit/continuelist.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/selection/active-line.min.js"></script>
+<!-- Search addons for Ctrl+F / Ctrl+H / Ctrl+G -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/search/searchcursor.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/search/search.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/search/jump-to-line.min.js"></script>
 
 <!-- Socket.IO -->
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+<!-- Import/Export dependencies -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html-docx-js@0.3.1/dist/html-docx.min.js"></script>
 
 <script>
 // --- State ---
@@ -298,6 +480,11 @@ var socket = null;
 var saveTimeout = null;
 var outlineTimeout = null;
 var suppressSave = false;
+var chatHistory = [];
+var ghostBookmark = null;
+var inlineCompleteTimeout = null;
+var inlineRequestId = 0;
+var inlineRequestPos = null;
 
 // --- Utility ---
 function esc(str) {
@@ -305,6 +492,24 @@ function esc(str) {
   var d = document.createElement('div');
   d.textContent = str;
   return d.innerHTML;
+}
+
+// --- Focus Mode ---
+function toggleFocusMode() {
+  var app = document.querySelector('.app');
+  app.classList.toggle('focus-mode');
+  var btn = document.getElementById('focus-btn');
+  btn.classList.toggle('active', app.classList.contains('focus-mode'));
+  if (editor) editor.refresh();
+}
+
+function exitFocusMode() {
+  var app = document.querySelector('.app');
+  if (app.classList.contains('focus-mode')) {
+    app.classList.remove('focus-mode');
+    document.getElementById('focus-btn').classList.remove('active');
+    if (editor) editor.refresh();
+  }
 }
 
 // --- Socket.IO ---
@@ -322,6 +527,8 @@ function connectSocket() {
   socket.on('suggestions_result', renderSuggestions);
   socket.on('review_result', renderReview);
   socket.on('fill_result', handleFillResult);
+  socket.on('chat_result', handleChatResult);
+  socket.on('inline_complete_result', handleInlineCompleteResult);
 
   socket.on('disconnect', function() {
     document.getElementById('toolbar-status').textContent = 'disconnected';
@@ -337,18 +544,33 @@ function createEditor() {
     lineWrapping: true,
     lineNumbers: false,
     styleActiveLine: true,
+    inputStyle: 'contenteditable',
+    spellcheck: true,
     extraKeys: {
       'Ctrl-S': function() { saveNow(); },
       'Alt-S': function() { requestSuggestions(); },
       'Alt-R': function() { requestReview(); },
       'Alt-F': function() { requestFill(); },
       'Enter': 'newlineAndIndentContinueMarkdownList',
+      'Tab': function() {
+        if (ghostBookmark) { acceptGhostText(); return; }
+        return CodeMirror.Pass;
+      },
     },
   });
 
-  editor.on('change', function() {
+  editor.on('change', function(cm, change) {
     if (!suppressSave) scheduleSave();
     scheduleOutlineUpdate();
+    // Inline autocomplete: trigger on user input
+    clearGhostText();
+    if (change.origin === '+input' || change.origin === 'paste') {
+      scheduleInlineComplete();
+    }
+  });
+
+  editor.on('cursorActivity', function() {
+    clearGhostText();
   });
 }
 
@@ -413,6 +635,98 @@ function openFile(filepath) {
     });
 }
 
+// --- Import ---
+function triggerImport() {
+  document.getElementById('import-input').click();
+}
+
+function handleImport(event) {
+  var file = event.target.files[0];
+  if (!file) return;
+  var name = file.name;
+
+  if (name.endsWith('.docx')) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      mammoth.convertToMarkdown({ arrayBuffer: e.target.result })
+        .then(function(result) {
+          loadImportedContent(result.value, name);
+        })
+        .catch(function(err) {
+          alert('Failed to convert DOCX: ' + err.message);
+        });
+    };
+    reader.readAsArrayBuffer(file);
+  } else {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      loadImportedContent(e.target.result, name);
+    };
+    reader.readAsText(file);
+  }
+  // Reset input so the same file can be re-imported
+  event.target.value = '';
+}
+
+function loadImportedContent(content, filename) {
+  var mdName = filename.replace(/\.(txt|docx)$/i, '') + '.md';
+  if (!mdName.endsWith('.md')) mdName += '.md';
+  var fullPath = browseDir ? browseDir + '/' + mdName : mdName;
+
+  // Save as new file
+  fetch('/api/files/' + fullPath.split('/').map(encodeURIComponent).join('/'), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: content }),
+  }).then(function() {
+    currentFile = fullPath;
+    document.getElementById('toolbar-filename').textContent = fullPath;
+    suppressSave = true;
+    editor.setValue(content);
+    editor.clearHistory();
+    suppressSave = false;
+    requestOutline();
+  }).catch(function(e) {
+    // Still load content locally even if save fails
+    suppressSave = true;
+    editor.setValue(content);
+    editor.clearHistory();
+    suppressSave = false;
+    alert('Imported locally but failed to save: ' + e.message);
+  });
+}
+
+// --- Export PDF ---
+function exportPDF() {
+  if (!editor) return;
+  var content = editor.getValue();
+  var html = marked.parse(content);
+  document.getElementById('print-container').innerHTML = html;
+  window.print();
+}
+
+// --- Export DOCX ---
+function exportDOCX() {
+  if (!editor) return;
+  var content = editor.getValue();
+  var html = marked.parse(content);
+  var fullHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    + 'body { font-family: Calibri, sans-serif; font-size: 11pt; line-height: 1.6; }'
+    + 'h1 { font-size: 20pt; } h2 { font-size: 16pt; } h3 { font-size: 13pt; }'
+    + 'p { margin-bottom: 8pt; }'
+    + 'blockquote { border-left: 3px solid #ccc; padding-left: 10px; color: #555; }'
+    + 'code { background: #f0f0f0; padding: 1px 3px; font-family: Consolas, monospace; font-size: 10pt; }'
+    + '</style></head><body>' + html + '</body></html>';
+  var blob = htmlDocx.asBlob(fullHtml);
+  var name = (currentFile || 'document').replace(/\.md$/, '') + '.docx';
+  var basename = name.split('/').pop();
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = basename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 // --- Outline ---
 function scheduleOutlineUpdate() {
   clearTimeout(outlineTimeout);
@@ -471,6 +785,7 @@ function requestSuggestions() {
     filename: currentFile || 'document.md',
   });
   document.getElementById('suggestions-content').innerHTML = '<div class="loading">Generating suggestions</div>';
+  switchRightTab('suggestions');
 }
 
 function renderSuggestions(data) {
@@ -575,6 +890,7 @@ function requestFill() {
     outline: headings,
   });
   document.getElementById('suggestions-content').innerHTML = '<div class="loading">Generating section content</div>';
+  switchRightTab('suggestions');
 }
 
 function handleFillResult(data) {
@@ -611,6 +927,142 @@ function acceptFill() {
   var endCh = editor.getLine(headingLine).length;
   editor.replaceRange('\n\n' + window._fillContent, { line: headingLine, ch: endCh });
   scheduleSave();
+}
+
+// --- Right Panel Tabs (Suggestions / Chat) ---
+function switchRightTab(tab) {
+  document.getElementById('tab-suggestions').classList.toggle('active', tab === 'suggestions');
+  document.getElementById('tab-chat').classList.toggle('active', tab === 'chat');
+  document.getElementById('suggestions-view').style.display = tab === 'suggestions' ? '' : 'none';
+  document.getElementById('chat-view').style.display = tab === 'chat' ? '' : 'none';
+}
+
+// --- Chat ---
+function sendChat() {
+  var input = document.getElementById('chat-input');
+  var msg = input.value.trim();
+  if (!msg || !socket) return;
+
+  chatHistory.push({ role: 'user', content: msg });
+  renderChatMessages();
+  input.value = '';
+
+  var content = editor ? editor.getValue() : '';
+  socket.emit('request_chat', {
+    document: content,
+    messages: chatHistory,
+  });
+}
+
+function handleChatResult(data) {
+  chatHistory.push({ role: 'assistant', content: data.response });
+  renderChatMessages();
+}
+
+function renderChatMessages() {
+  var el = document.getElementById('chat-messages');
+  var html = '';
+  for (var i = 0; i < chatHistory.length; i++) {
+    var m = chatHistory[i];
+    html += '<div class="chat-msg ' + m.role + '">' + esc(m.content) + '</div>';
+  }
+  if (chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === 'user') {
+    html += '<div class="loading">Thinking</div>';
+  }
+  el.innerHTML = html;
+  el.scrollTop = el.scrollHeight;
+}
+
+// --- Inline Autocomplete ---
+function scheduleInlineComplete() {
+  clearTimeout(inlineCompleteTimeout);
+  inlineCompleteTimeout = setTimeout(function() {
+    if (!socket || !editor) return;
+    var cursor = editor.getCursor();
+    var lineText = editor.getLine(cursor.line);
+    // Skip empty lines and headings
+    if (!lineText.trim() || lineText.match(/^#{1,6}\s/)) return;
+
+    inlineRequestId++;
+    inlineRequestPos = { line: cursor.line, ch: cursor.ch };
+    var content = editor.getValue();
+    socket.emit('request_inline_complete', {
+      document: content,
+      cursor_line: cursor.line,
+      cursor_ch: cursor.ch,
+      request_id: inlineRequestId,
+    });
+  }, 1000);
+}
+
+function handleInlineCompleteResult(data) {
+  if (data.request_id !== inlineRequestId) return; // stale
+  if (!data.text || !editor) return;
+
+  // Check cursor hasn't moved
+  var cursor = editor.getCursor();
+  if (!inlineRequestPos || cursor.line !== inlineRequestPos.line || cursor.ch !== inlineRequestPos.ch) return;
+
+  showGhostText(data.text, cursor);
+}
+
+function showGhostText(text, pos) {
+  clearGhostText();
+  var node = document.createElement('span');
+  node.className = 'ghost-text';
+  node.textContent = text;
+  ghostBookmark = editor.setBookmark(pos, { widget: node, insertLeft: true });
+}
+
+function clearGhostText() {
+  clearTimeout(inlineCompleteTimeout);
+  if (ghostBookmark) {
+    ghostBookmark.clear();
+    ghostBookmark = null;
+  }
+}
+
+function acceptGhostText() {
+  if (!ghostBookmark) return;
+  var pos = ghostBookmark.find();
+  var widget = ghostBookmark.widgetNode;
+  if (!pos || !widget) { clearGhostText(); return; }
+  var text = widget.textContent;
+  clearGhostText();
+  editor.replaceRange(text, pos);
+}
+
+// --- Mobile Panel Switching ---
+function showMobilePanel(name) {
+  // Update active tab
+  var tabs = document.querySelectorAll('.mobile-tab');
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].classList.remove('active');
+  }
+  event.target.classList.add('active');
+
+  // Remove mobile-active from all panels
+  var panels = ['outline-panel', 'review-panel', 'suggestions-panel'];
+  for (var i = 0; i < panels.length; i++) {
+    document.getElementById(panels[i]).classList.remove('mobile-active');
+  }
+
+  if (name === 'editor') {
+    // Just show editor, hide overlays
+    document.getElementById('editor-panel').style.display = '';
+  } else if (name === 'outline') {
+    document.getElementById('outline-panel').classList.add('mobile-active');
+  } else if (name === 'suggest') {
+    document.getElementById('suggestions-panel').classList.add('mobile-active');
+    switchRightTab('suggestions');
+  } else if (name === 'review') {
+    document.getElementById('review-panel').classList.add('mobile-active');
+  } else if (name === 'chat') {
+    document.getElementById('suggestions-panel').classList.add('mobile-active');
+    switchRightTab('chat');
+  }
+
+  if (editor) editor.refresh();
 }
 
 // --- File Browser ---
@@ -786,15 +1238,24 @@ document.addEventListener('DOMContentLoaded', function() {
 
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
+    exitFocusMode();
+    clearGhostText();
     closeFileBrowser();
     closeModal('commit-modal');
     closeModal('history-modal');
+    // Close mobile panels
+    var panels = ['outline-panel', 'review-panel', 'suggestions-panel'];
+    for (var i = 0; i < panels.length; i++) {
+      document.getElementById(panels[i]).classList.remove('mobile-active');
+    }
   }
   if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveNow(); }
   if (e.altKey) {
     if (e.key === 's') { e.preventDefault(); requestSuggestions(); }
     if (e.key === 'r') { e.preventDefault(); requestReview(); }
     if (e.key === 'f') { e.preventDefault(); requestFill(); }
+    if (e.key === 'z') { e.preventDefault(); toggleFocusMode(); }
+    if (e.key === 'c') { e.preventDefault(); switchRightTab('chat'); document.getElementById('chat-input').focus(); }
   }
 });
 </script>

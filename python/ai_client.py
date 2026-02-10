@@ -41,6 +41,13 @@ class SectionContent:
 
 
 @dataclass
+class ChatMessage:
+    """A single chat message."""
+    role: str                   # "user" or "assistant"
+    content: str                # Message text
+
+
+@dataclass
 class DocumentReview:
     """AI review/critique of the document."""
     critique: str               # Free-form critical analysis
@@ -73,6 +80,16 @@ class AIProvider(ABC):
     @abstractmethod
     def review_document(self, document: str) -> DocumentReview:
         """Review document for readability and argument strength."""
+        pass
+
+    @abstractmethod
+    def chat(self, document: str, messages: list[ChatMessage]) -> str:
+        """Chat about the document. Returns assistant response text."""
+        pass
+
+    @abstractmethod
+    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int) -> str:
+        """Generate inline text completion at cursor position. Returns continuation text."""
         pass
 
 
@@ -224,6 +241,55 @@ STRENGTHS: [One sentence - what's working well]"""
                 weaknesses="",
                 strengths=""
             )
+
+    def chat(self, document: str, messages: list[ChatMessage]) -> str:
+        """Chat about the document using GPT."""
+        try:
+            system_content = (
+                "You are a helpful writing assistant. The user is working on a document and may ask "
+                "questions about it, request edits, brainstorm ideas, or discuss their writing.\n\n"
+                f"Here is the document they are working on (truncated):\n---\n{document[:4000]}\n---\n\n"
+                "Be concise and helpful. Reference specific parts of the document when relevant."
+            )
+            if self.writing_style:
+                system_content += f"\n\nThe user's writing style preference:\n{self.writing_style}"
+
+            api_messages = []
+            for m in messages[-10:]:
+                api_messages.append({"role": m.role, "content": m.content})
+
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "system", "content": system_content}] + api_messages,
+                temperature=0.7,
+                max_completion_tokens=500,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            return f"[Error: {e}]"
+
+    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int) -> str:
+        """Generate inline completion at cursor position."""
+        try:
+            lines = document.split('\n')
+            # Get text before cursor (last 1500 chars)
+            before_lines = lines[:cursor_line]
+            if cursor_line < len(lines):
+                before_lines.append(lines[cursor_line][:cursor_ch])
+            text_before = '\n'.join(before_lines)[-1500:]
+
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a writing autocomplete engine. Output ONLY the natural continuation of the text. Write 1-2 sentences max. No explanations, no quotes, no prefixes."},
+                    {"role": "user", "content": f"Continue this text naturally:\n\n{text_before}"},
+                ],
+                temperature=0.3,
+                max_completion_tokens=100,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            return ""
 
     def _parse_review(self, response: str) -> DocumentReview:
         """Parse review response into structured format."""
@@ -483,6 +549,53 @@ STRENGTHS: [One sentence - what's working well]"""
                 strengths=""
             )
 
+    def chat(self, document: str, messages: list[ChatMessage]) -> str:
+        """Chat about the document using Claude."""
+        try:
+            system_content = (
+                "You are a helpful writing assistant. The user is working on a document and may ask "
+                "questions about it, request edits, brainstorm ideas, or discuss their writing.\n\n"
+                f"Here is the document they are working on (truncated):\n---\n{document[:4000]}\n---\n\n"
+                "Be concise and helpful. Reference specific parts of the document when relevant."
+            )
+            if self.writing_style:
+                system_content += f"\n\nThe user's writing style preference:\n{self.writing_style}"
+
+            api_messages = []
+            for m in messages[-10:]:
+                api_messages.append({"role": m.role, "content": m.content})
+
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=500,
+                messages=api_messages,
+                system=system_content,
+            )
+            return response.content[0].text.strip()
+        except Exception as e:
+            return f"[Error: {e}]"
+
+    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int) -> str:
+        """Generate inline completion at cursor position."""
+        try:
+            lines = document.split('\n')
+            before_lines = lines[:cursor_line]
+            if cursor_line < len(lines):
+                before_lines.append(lines[cursor_line][:cursor_ch])
+            text_before = '\n'.join(before_lines)[-1500:]
+
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=100,
+                messages=[
+                    {"role": "user", "content": f"Continue this text naturally:\n\n{text_before}"},
+                ],
+                system="You are a writing autocomplete engine. Output ONLY the natural continuation of the text. Write 1-2 sentences max. No explanations, no quotes, no prefixes.",
+            )
+            return response.content[0].text.strip()
+        except Exception as e:
+            return ""
+
     def _parse_review(self, response: str) -> DocumentReview:
         """Parse review response into structured format."""
         text = response.strip()
@@ -670,6 +783,15 @@ First, we should understand the foundational concepts. Second, we can explore th
             weaknesses="The central argument rests on an assumption that's never defended.",
             strengths="The concrete examples are vivid and the closing pulls the threads together well."
         )
+
+    def chat(self, document: str, messages: list[ChatMessage]) -> str:
+        """Return a canned chat response."""
+        last_msg = messages[-1].content if messages else ""
+        return f"That's an interesting point about your document. Based on what you've written, I'd suggest focusing on strengthening the core argument and adding more specific examples."
+
+    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int) -> str:
+        """Return a canned inline completion."""
+        return " and this leads to several important considerations worth exploring further."
 
 
 def _get_model_override() -> dict:
