@@ -45,6 +45,9 @@ echo ""
 echo -e "${YELLOW}[1/7] Installing system packages...${NC}"
 apt-get update -qq
 apt-get install -y -qq python3 python3-venv python3-pip git nginx certbot python3-certbot-nginx
+echo -e "${YELLOW}    Installing LaTeX (TeX Live)...${NC}"
+apt-get install -y -qq texlive-latex-base texlive-latex-extra \
+  texlive-fonts-recommended texlive-fonts-extra texlive-latex-recommended texlive-xetex
 
 # --- Step 2: Create user ---
 echo -e "${YELLOW}[2/7] Creating 'writer' user...${NC}"

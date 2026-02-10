@@ -87,6 +87,13 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .cm-s-writer .cm-quote { color: #9ece6a; font-style: italic; }
 .cm-s-writer .cm-hr { color: #3b4261; }
 .cm-s-writer .cm-formatting { color: #565f89; }
+/* LaTeX (stex) syntax highlighting */
+.cm-s-writer .cm-keyword { color: #7aa2f7; }
+.cm-s-writer .cm-tag { color: #e0af68; }
+.cm-s-writer .cm-bracket { color: #bb9af7; }
+.cm-s-writer .cm-builtin { color: #9ece6a; }
+.cm-s-writer .cm-atom { color: #7dcfff; }
+.cm-s-writer .cm-number { color: #ff9e64; }
 
 /* CodeMirror search dialog dark theme */
 .CodeMirror-dialog {
@@ -334,6 +341,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   <div class="mobile-tab" onclick="showMobilePanel('suggest', this)">Suggest</div>
   <div class="mobile-tab" onclick="showMobilePanel('review', this)">Review</div>
   <div class="mobile-tab" onclick="showMobilePanel('chat', this)">Chat</div>
+  <div class="mobile-tab mobile-preview-tab" onclick="showMobilePanel('preview', this)" style="display:none">Preview</div>
 </div>
 
 <div class="app">
@@ -369,12 +377,20 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
       <button onclick="exportPDF()">PDF</button>
       <button onclick="exportDOCX()">Word</button>
       <button onclick="downloadFile()">Download</button>
+      <span class="latex-only" style="display:none"><span class="sep">|</span>
+      <button onclick="compileLaTeX()" id="compile-btn">Compile</button>
+      <select id="latex-engine" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);border-radius:3px;font-family:inherit;font-size:11px;padding:2px 4px;">
+        <option value="pdflatex">pdflatex</option>
+        <option value="xelatex">xelatex</option>
+        <option value="lualatex">lualatex</option>
+      </select></span>
       <span class="sep">|</span>
       <button onclick="showCommitDialog()">Commit</button>
       <button onclick="showHistory()">History</button>
       <span class="sep">|</span>
       <button id="focus-btn" onclick="toggleFocusMode()">Focus</button>
       <button id="autocomplete-btn" onclick="toggleAutocomplete()">Complete</button>
+      <button onclick="showStyleDialog()">Style</button>
       <span class="sep">|</span>
       <button onclick="location.href='/logout'">Logout</button>
       <span class="status" id="toolbar-status"></span>
@@ -387,6 +403,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
     <div class="right-tabs">
       <div class="right-tab active" id="tab-suggestions" onclick="switchRightTab('suggestions')">Suggestions</div>
       <div class="right-tab" id="tab-chat" onclick="switchRightTab('chat')">Chat</div>
+      <div class="right-tab" id="tab-preview" onclick="switchRightTab('preview')" style="display:none">Preview</div>
     </div>
     <!-- Suggestions content -->
     <div id="suggestions-view">
@@ -411,11 +428,20 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
         </div>
       </div>
     </div>
+    <!-- PDF Preview content -->
+    <div id="preview-view" style="display:none;height:calc(100% - 40px)">
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button class="panel-action" onclick="compileLaTeX()" style="flex:1;margin:0">Recompile <kbd>Alt+B</kbd></button>
+        <button class="panel-action" onclick="openPdfInTab()" style="flex:1;margin:0">Open in Tab</button>
+      </div>
+      <iframe id="pdf-iframe" src="about:blank" style="width:100%;height:calc(100% - 50px);border:1px solid var(--border);border-radius:3px;background:#fff"></iframe>
+      <div class="hint" id="preview-hint" style="margin-top:6px">Compile to see preview. <kbd>Alt+B</kbd> to compile.</div>
+    </div>
   </div>
 </div>
 
 <!-- Hidden file input for import -->
-<input type="file" id="import-input" accept=".txt,.md,.docx" style="display:none" onchange="handleImport(event)">
+<input type="file" id="import-input" accept=".txt,.md,.tex,.docx" style="display:none" onchange="handleImport(event)">
 
 <!-- Print container for PDF export -->
 <div id="print-container"></div>
@@ -480,11 +506,28 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   </div>
 </div>
 
+<!-- Style Modal -->
+<div class="modal-overlay" id="style-modal">
+  <div class="modal">
+    <h3>Writing Style</h3>
+    <div id="style-file" style="font-size:12px;color:var(--text-dim);margin-bottom:8px"></div>
+    <textarea id="style-textarea" rows="5" placeholder="e.g. Formal academic tone, concise paragraphs, avoid passive voice..." style="width:100%;padding:6px 10px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:13px;border-radius:3px;resize:vertical;margin-bottom:4px"></textarea>
+    <div id="style-global-hint" style="font-size:11px;color:var(--text-dim);margin-bottom:10px"></div>
+    <div class="modal-actions">
+      <button class="btn-primary" onclick="saveWritingStyle()">Save</button>
+      <button class="btn-secondary" onclick="clearWritingStyle()">Clear</button>
+      <button class="btn-secondary" onclick="closeModal('style-modal')">Cancel</button>
+    </div>
+    <div id="style-result" style="margin-top:8px;font-size:12px"></div>
+  </div>
+</div>
+
 <!-- CodeMirror 5 -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/dialog/dialog.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/markdown/markdown.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/stex/stex.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/edit/continuelist.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/selection/active-line.min.js"></script>
 <!-- Overlay mode (required by spell checker) -->
@@ -509,6 +552,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 <script>
 // --- State ---
 var currentFile = null;
+var currentFileType = 'markdown';
 var editor = null;
 var socket = null;
 var saveTimeout = null;
@@ -520,6 +564,31 @@ var ghostBookmark = null;
 var inlineCompleteTimeout = null;
 var inlineRequestId = 0;
 var inlineRequestPos = null;
+var lastCompiledPdf = null;
+
+// --- File Type Detection ---
+function getFileType(filepath) {
+  if (!filepath) return 'markdown';
+  var ext = filepath.split('.').pop().toLowerCase();
+  if (ext === 'tex' || ext === 'sty' || ext === 'cls' || ext === 'bib') return 'latex';
+  return 'markdown';
+}
+
+function setEditorMode(fileType) {
+  currentFileType = fileType;
+  if (!editor) return;
+  if (fileType === 'latex') {
+    editor.setOption('mode', 'stex');
+  } else {
+    if (_hasSpellChecker) {
+      editor.setOption('mode', 'spell-checker');
+      editor.setOption('backdrop', 'markdown');
+    } else {
+      editor.setOption('mode', 'markdown');
+    }
+  }
+  updateToolbarForFileType(fileType);
+}
 
 // --- Utility ---
 function esc(str) {
@@ -571,6 +640,7 @@ function connectSocket() {
   socket.on('fill_result', handleFillResult);
   socket.on('chat_result', handleChatResult);
   socket.on('inline_complete_result', handleInlineCompleteResult);
+  socket.on('compile_result', handleCompileResult);
 
   socket.on('disconnect', function() {
     document.getElementById('toolbar-status').textContent = 'disconnected';
@@ -597,7 +667,10 @@ function createEditor() {
       'Alt-S': function() { requestSuggestions(); },
       'Alt-R': function() { requestReview(); },
       'Alt-F': function() { requestFill(); },
-      'Enter': 'newlineAndIndentContinueMarkdownList',
+      'Enter': function(cm) {
+        if (currentFileType === 'markdown') return CodeMirror.commands.newlineAndIndentContinueMarkdownList(cm);
+        return CodeMirror.Pass;
+      },
       'Tab': function() {
         if (ghostBookmark) { acceptGhostText(); return; }
         return CodeMirror.Pass;
@@ -697,6 +770,7 @@ function openFile(filepath) {
       editor.setValue(data.content);
       editor.clearHistory();
       suppressSave = false;
+      setEditorMode(getFileType(filepath));
       closeFileBrowser();
       requestOutline();
     })
@@ -769,6 +843,10 @@ function loadImportedContent(content, filename) {
 // --- Export PDF ---
 function exportPDF() {
   if (!editor) return;
+  if (currentFileType === 'latex') {
+    compileLaTeX();
+    return;
+  }
   var content = editor.getValue();
   var html = marked.parse(content);
   document.getElementById('print-container').innerHTML = html;
@@ -815,7 +893,7 @@ function requestOutline() {
   if (!socket || !editor) return;
   var content = editor.getValue();
   var cursor = editor.getCursor();
-  socket.emit('request_outline', { content: content, cursor_line: cursor.line + 1 });
+  socket.emit('request_outline', { content: content, cursor_line: cursor.line + 1, filename: currentFile || '' });
 }
 
 function renderOutline(data) {
@@ -844,7 +922,7 @@ function renderOutline(data) {
   }
 
   if (data.items.length === 0) {
-    html += '<div class="hint">No headings yet. Add headings with # syntax.</div>';
+    html += '<div class="hint">No headings yet. Add headings with ' + (currentFileType === 'latex' ? '\\section{...} commands.' : '# syntax.') + '</div>';
   }
 
   el.innerHTML = html;
@@ -919,7 +997,7 @@ function acceptSuggestion(index, mode) {
 function requestReview() {
   if (!socket || !editor) return;
   var content = editor.getValue();
-  socket.emit('request_review', { content: content });
+  socket.emit('request_review', { content: content, filename: currentFile || '' });
   document.getElementById('review-content').innerHTML = '<div class="loading">Reviewing document</div>';
 }
 
@@ -966,6 +1044,7 @@ function requestFill() {
     content: content,
     heading: currentHeading,
     outline: headings,
+    filename: currentFile || '',
   });
   document.getElementById('suggestions-content').innerHTML = '<div class="loading">Generating section content</div>';
   switchRightTab('suggestions');
@@ -1007,12 +1086,99 @@ function acceptFill() {
   scheduleSave();
 }
 
-// --- Right Panel Tabs (Suggestions / Chat) ---
+// --- Right Panel Tabs (Suggestions / Chat / Preview) ---
 function switchRightTab(tab) {
   document.getElementById('tab-suggestions').classList.toggle('active', tab === 'suggestions');
   document.getElementById('tab-chat').classList.toggle('active', tab === 'chat');
+  document.getElementById('tab-preview').classList.toggle('active', tab === 'preview');
   document.getElementById('suggestions-view').style.display = tab === 'suggestions' ? '' : 'none';
   document.getElementById('chat-view').style.display = tab === 'chat' ? '' : 'none';
+  document.getElementById('preview-view').style.display = tab === 'preview' ? '' : 'none';
+}
+
+// --- LaTeX Toolbar + Compile ---
+function updateToolbarForFileType(fileType) {
+  var latexEls = document.querySelectorAll('.latex-only');
+  for (var i = 0; i < latexEls.length; i++) {
+    latexEls[i].style.display = fileType === 'latex' ? '' : 'none';
+  }
+  document.getElementById('tab-preview').style.display = fileType === 'latex' ? '' : 'none';
+  // Mobile preview tab
+  var mobilePrev = document.querySelector('.mobile-preview-tab');
+  if (mobilePrev) mobilePrev.style.display = fileType === 'latex' ? 'inline-block' : 'none';
+  // If switching away from latex, go back to suggestions tab if on preview
+  if (fileType !== 'latex' && document.getElementById('tab-preview').classList.contains('active')) {
+    switchRightTab('suggestions');
+  }
+}
+
+function compileLaTeX() {
+  if (!socket || !editor || !currentFile) return;
+  if (currentFileType !== 'latex') return;
+  var engine = document.getElementById('latex-engine').value;
+  var content = editor.getValue();
+  var status = document.getElementById('toolbar-status');
+  status.textContent = 'compiling...';
+  status.style.color = 'var(--yellow)';
+  // Save first, then compile via socket
+  saveFile();
+  socket.emit('request_compile', {
+    filepath: currentFile,
+    engine: engine,
+    content: content,
+  });
+}
+
+function handleCompileResult(data) {
+  var status = document.getElementById('toolbar-status');
+  if (data.status === 'ok') {
+    status.textContent = 'compiled';
+    status.style.color = 'var(--green)';
+    lastCompiledPdf = data.pdf_path;
+    showPdfPreview(data.pdf_path);
+    if (data.warnings && data.warnings.length > 0) {
+      showCompileMessages([], data.warnings);
+    }
+    setTimeout(function() { if (status.textContent === 'compiled') { status.textContent = ''; status.style.color = ''; } }, 3000);
+  } else {
+    status.textContent = 'compile error';
+    status.style.color = 'var(--red)';
+    showCompileMessages(data.errors || [], data.warnings || []);
+    setTimeout(function() { if (status.textContent === 'compile error') { status.textContent = ''; status.style.color = ''; } }, 5000);
+  }
+}
+
+function showCompileMessages(errors, warnings) {
+  var el = document.getElementById('review-content');
+  var html = '';
+  if (errors.length > 0) {
+    html += '<div class="review-section"><div class="review-label weakness">Compile Errors</div>';
+    for (var i = 0; i < errors.length; i++) {
+      html += '<div class="review-text" style="color:var(--red);font-size:12px;margin-bottom:4px">' + esc(errors[i]) + '</div>';
+    }
+    html += '</div>';
+  }
+  if (warnings.length > 0) {
+    html += '<div class="review-section"><div class="review-label critique">Warnings</div>';
+    for (var i = 0; i < warnings.length; i++) {
+      html += '<div class="review-text" style="color:var(--yellow);font-size:12px;margin-bottom:4px">' + esc(warnings[i]) + '</div>';
+    }
+    html += '</div>';
+  }
+  if (html) el.innerHTML = html;
+}
+
+function showPdfPreview(pdfPath) {
+  var iframe = document.getElementById('pdf-iframe');
+  iframe.src = '/api/latex/pdf/' + pdfPath.split('/').map(encodeURIComponent).join('/');
+  document.getElementById('preview-hint').style.display = 'none';
+  switchRightTab('preview');
+}
+
+function openPdfInTab() {
+  if (lastCompiledPdf) {
+    window.open('/api/latex/pdf/' + lastCompiledPdf.split('/').map(encodeURIComponent).join('/'), '_blank');
+  }
 }
 
 // --- Chat ---
@@ -1029,6 +1195,7 @@ function sendChat() {
   socket.emit('request_chat', {
     document: content,
     messages: chatHistory,
+    filename: currentFile || '',
   });
 }
 
@@ -1069,6 +1236,7 @@ function scheduleInlineComplete() {
       cursor_line: cursor.line,
       cursor_ch: cursor.ch,
       request_id: inlineRequestId,
+      filename: currentFile || '',
     });
   }, 1000);
 }
@@ -1114,6 +1282,58 @@ function acceptGhostText() {
   editor.replaceRange(text, pos);
 }
 
+// --- Writing Style ---
+function showStyleDialog() {
+  if (!currentFile) { alert('No file open.'); return; }
+  document.getElementById('style-file').textContent = currentFile;
+  document.getElementById('style-textarea').value = '';
+  document.getElementById('style-global-hint').textContent = '';
+  document.getElementById('style-result').innerHTML = '';
+  document.getElementById('style-modal').classList.add('active');
+
+  fetch('/api/meta/' + currentFile.split('/').map(encodeURIComponent).join('/'))
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      document.getElementById('style-textarea').value = data.writing_style || '';
+      if (data.global_writing_style) {
+        document.getElementById('style-global-hint').textContent = 'Global default: ' + data.global_writing_style;
+      }
+    })
+    .catch(function() {});
+
+  setTimeout(function() { document.getElementById('style-textarea').focus(); }, 100);
+}
+
+function saveWritingStyle() {
+  if (!currentFile) return;
+  var style = document.getElementById('style-textarea').value.trim();
+  var resultEl = document.getElementById('style-result');
+  resultEl.innerHTML = '<span style="color:var(--yellow)">Saving...</span>';
+
+  fetch('/api/meta/' + currentFile.split('/').map(encodeURIComponent).join('/'), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ writing_style: style }),
+  })
+  .then(function(resp) { return resp.json(); })
+  .then(function(data) {
+    if (data.error) {
+      resultEl.innerHTML = '<span style="color:var(--red)">' + esc(data.error) + '</span>';
+    } else {
+      resultEl.innerHTML = '<span style="color:var(--green)">Saved</span>';
+      setTimeout(function() { closeModal('style-modal'); }, 800);
+    }
+  })
+  .catch(function(e) {
+    resultEl.innerHTML = '<span style="color:var(--red)">Error: ' + esc(e.message) + '</span>';
+  });
+}
+
+function clearWritingStyle() {
+  document.getElementById('style-textarea').value = '';
+  saveWritingStyle();
+}
+
 // --- Mobile Panel Switching ---
 function showMobilePanel(name, el) {
   // Update active tab
@@ -1142,6 +1362,9 @@ function showMobilePanel(name, el) {
   } else if (name === 'chat') {
     document.getElementById('suggestions-panel').classList.add('mobile-active');
     switchRightTab('chat');
+  } else if (name === 'preview') {
+    document.getElementById('suggestions-panel').classList.add('mobile-active');
+    switchRightTab('preview');
   }
 
   if (editor) editor.refresh();
@@ -1213,12 +1436,19 @@ function closeFileBrowser() {
 function createFile() {
   var name = document.getElementById('new-filename').value.trim();
   if (!name) return;
-  if (!name.endsWith('.md')) name += '.md';
+  if (name.indexOf('.') === -1) name += '.md';
   var fullPath = browseDir ? browseDir + '/' + name : name;
+  var content;
+  if (name.endsWith('.tex')) {
+    var title = name.replace('.tex', '');
+    content = '\\documentclass{article}\n\\usepackage[utf8]{inputenc}\n\\usepackage{amsmath}\n\n\\title{' + title + '}\n\\author{}\n\\date{\\today}\n\n\\begin{document}\n\\maketitle\n\n\\section{Introduction}\n\n\n\n\\end{document}\n';
+  } else {
+    content = '# ' + name.replace('.md', '') + '\n\n';
+  }
   fetch('/api/files/' + fullPath.split('/').map(encodeURIComponent).join('/'), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content: '# ' + name.replace('.md', '') + '\n\n' }),
+    body: JSON.stringify({ content: content }),
   }).then(function() {
     openFile(fullPath);
   }).catch(function(e) {
@@ -1418,6 +1648,7 @@ document.addEventListener('keydown', function(e) {
     closeFileBrowser();
     closeModal('commit-modal');
     closeModal('history-modal');
+    closeModal('style-modal');
     // Close mobile panels
     var panels = ['outline-panel', 'review-panel', 'suggestions-panel'];
     for (var i = 0; i < panels.length; i++) {
@@ -1430,6 +1661,7 @@ document.addEventListener('keydown', function(e) {
     if (e.key === 'r') { e.preventDefault(); requestReview(); }
     if (e.key === 'f') { e.preventDefault(); requestFill(); }
     if (e.key === 'z') { e.preventDefault(); toggleFocusMode(); }
+    if (e.key === 'b') { e.preventDefault(); compileLaTeX(); }
     if (e.key === 'c') { e.preventDefault(); switchRightTab('chat'); document.getElementById('chat-input').focus(); }
   }
 });

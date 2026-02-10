@@ -45,3 +45,6 @@ password = changeme
 host = 0.0.0.0
 port = 8080
 documents_dir = ~/Documents/Writer
+
+# LaTeX engine: pdflatex, xelatex, or lualatex
+latex_engine = pdflatex

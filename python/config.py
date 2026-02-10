@@ -48,6 +48,7 @@ class WebConfig:
     host: str = "0.0.0.0"
     port: int = 8080
     documents_dir: str = "~/Documents/Writer"
+    latex_engine: str = "pdflatex"
 
 
 @dataclass
@@ -121,6 +122,7 @@ def load_config() -> WriterConfig:
         web.host = web_section.get('host', web.host)
         web.port = web_section.getint('port', web.port)
         web.documents_dir = web_section.get('documents_dir', web.documents_dir)
+        web.latex_engine = web_section.get('latex_engine', web.latex_engine)
 
     return WriterConfig(ai=ai, display=display, editor=editor, web=web)
 

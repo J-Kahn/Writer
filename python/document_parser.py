@@ -155,6 +155,88 @@ def parse_markdown(content: str | list[str]) -> DocumentOutline:
     )
 
 
+def parse_latex(content: str | list[str]) -> DocumentOutline:
+    """
+    Parse LaTeX content and extract outline.
+
+    Extracts \\part, \\chapter, \\section, \\subsection, \\subsubsection,
+    and \\title commands.
+
+    Args:
+        content: LaTeX content as string or list of lines
+
+    Returns:
+        DocumentOutline with extracted structure
+    """
+    if isinstance(content, str):
+        lines = content.split('\n')
+    else:
+        lines = content
+
+    items: list[OutlineItem] = []
+    title: Optional[str] = None
+
+    # LaTeX sectioning commands and their hierarchy levels
+    section_commands = {
+        'part': 1,
+        'chapter': 2,
+        'section': 3,
+        'subsection': 4,
+        'subsubsection': 5,
+    }
+
+    # Pattern for sectioning commands: \section{...} or \section*{...}
+    section_pattern = re.compile(
+        r'\\(part|chapter|section|subsection|subsubsection)\*?\{([^}]*)\}'
+    )
+    title_pattern = re.compile(r'\\title\{([^}]*)\}')
+
+    in_comment = False
+
+    for i, line in enumerate(lines):
+        line_num = i + 1
+        stripped = line.strip()
+
+        # Skip comment lines
+        if stripped.startswith('%'):
+            continue
+
+        # Check for \title{...}
+        title_match = title_pattern.search(line)
+        if title_match and title is None:
+            title = title_match.group(1).strip()
+
+        # Check for sectioning commands
+        for match in section_pattern.finditer(line):
+            cmd = match.group(1)
+            text = match.group(2).strip()
+            level = section_commands[cmd]
+
+            items.append(OutlineItem(
+                level=level,
+                text=text,
+                line_number=line_num,
+                item_type="heading"
+            ))
+
+    # Calculate word count - strip LaTeX commands before counting
+    text_content = '\n'.join(lines)
+    # Remove comments
+    text_for_count = re.sub(r'%.*$', '', text_content, flags=re.MULTILINE)
+    # Remove LaTeX commands
+    text_for_count = re.sub(r'\\[a-zA-Z]+\*?(\{[^}]*\})*(\[[^\]]*\])*', ' ', text_for_count)
+    # Remove braces and other LaTeX syntax
+    text_for_count = re.sub(r'[{}\\$&~^_]', ' ', text_for_count)
+    word_count = len(re.findall(r'\b\w+\b', text_for_count))
+
+    return DocumentOutline(
+        items=items,
+        title=title,
+        word_count=word_count,
+        line_count=len(lines)
+    )
+
+
 def get_current_section(outline: DocumentOutline, cursor_line: int) -> Optional[OutlineItem]:
     """
     Find the heading that contains the cursor position.

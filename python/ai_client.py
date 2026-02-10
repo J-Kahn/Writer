@@ -62,7 +62,8 @@ class AIProvider(ABC):
     def generate_suggestions(
         self,
         context: WritingContext,
-        count: int = 3
+        count: int = 3,
+        writing_style: str = None
     ) -> list[Suggestion]:
         """Generate writing suggestions for current paragraph."""
         pass
@@ -72,25 +73,34 @@ class AIProvider(ABC):
         self,
         document: str,
         section_heading: str,
-        outline: list[str]
+        outline: list[str],
+        writing_style: str = None
     ) -> SectionContent:
         """Generate content for a section based on its heading and document context."""
         pass
 
     @abstractmethod
-    def review_document(self, document: str) -> DocumentReview:
+    def review_document(self, document: str, document_type: str = "markdown") -> DocumentReview:
         """Review document for readability and argument strength."""
         pass
 
     @abstractmethod
-    def chat(self, document: str, messages: list[ChatMessage]) -> str:
+    def chat(self, document: str, messages: list[ChatMessage], document_type: str = "markdown", writing_style: str = None) -> str:
         """Chat about the document. Returns assistant response text."""
         pass
 
     @abstractmethod
-    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int) -> str:
+    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int, document_type: str = "markdown") -> str:
         """Generate inline text completion at cursor position. Returns continuation text."""
         pass
+
+
+def _latex_note(context_or_doc_type):
+    """Return a LaTeX instruction note if document is LaTeX, else empty string."""
+    doc_type = context_or_doc_type if isinstance(context_or_doc_type, str) else getattr(context_or_doc_type, 'document_type', 'markdown')
+    if doc_type == 'latex':
+        return "\n\nNote: This is a LaTeX document. Output LaTeX-formatted text with proper commands (e.g. \\textbf{}, \\emph{}, \\cite{}, etc.). Do not use Markdown syntax."
+    return ""
 
 
 class OpenAIProvider(AIProvider):
@@ -112,9 +122,11 @@ class OpenAIProvider(AIProvider):
     def generate_suggestions(
         self,
         context: WritingContext,
-        count: int = 3
+        count: int = 3,
+        writing_style: str = None
     ) -> list[Suggestion]:
         """Generate paragraph continuation suggestions using GPT."""
+        effective_style = writing_style if writing_style is not None else self.writing_style
         prompt = self._build_paragraph_prompt(context, count)
 
         try:
@@ -124,8 +136,9 @@ class OpenAIProvider(AIProvider):
                 "2. When the user is on an empty line, suggest the next paragraph\n"
                 "Always match the document's tone and style. Output clean text only."
             )
-            if self.writing_style:
-                system_content += f"\n\nThe user has specified this writing style preference:\n{self.writing_style}"
+            system_content += _latex_note(context)
+            if effective_style:
+                system_content += f"\n\nThe user has specified this writing style preference:\n{effective_style}"
 
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -150,9 +163,11 @@ class OpenAIProvider(AIProvider):
         self,
         document: str,
         section_heading: str,
-        outline: list[str]
+        outline: list[str],
+        writing_style: str = None
     ) -> SectionContent:
         """Generate content for a section."""
+        effective_style = writing_style if writing_style is not None else self.writing_style
         prompt = f"""You are writing content for a document. Here is the current document:
 
 ---
@@ -174,8 +189,8 @@ Write only the section content, no heading."""
 
         try:
             system_content = "You are a skilled writer helping complete a document."
-            if self.writing_style:
-                system_content += f"\n\nFollow this writing style preference:\n{self.writing_style}"
+            if effective_style:
+                system_content += f"\n\nFollow this writing style preference:\n{effective_style}"
 
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -198,7 +213,7 @@ Write only the section content, no heading."""
                 content=f"[Error generating content: {str(e)}]"
             )
 
-    def review_document(self, document: str) -> DocumentReview:
+    def review_document(self, document: str, document_type: str = "markdown") -> DocumentReview:
         """Review document like a tough editor/prosecuting attorney."""
         prompt = f"""Review this document as a critical editor and prosecuting attorney.
 
@@ -216,17 +231,17 @@ WEAKNESSES: [One sentence - the key hole in the argument, like a prosecutor woul
 STRENGTHS: [One sentence - what's working well]"""
 
         try:
+            system_content = (
+                "You are a sharp, experienced editor with high standards. "
+                "You give honest, specific feedback - not generic praise or vague criticism. "
+                "When you find problems, you explain exactly what's wrong and why it matters."
+            )
+            system_content += _latex_note(document_type)
+
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a sharp, experienced editor with high standards. "
-                            "You give honest, specific feedback - not generic praise or vague criticism. "
-                            "When you find problems, you explain exactly what's wrong and why it matters."
-                        )
-                    },
+                    {"role": "system", "content": system_content},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.6,
@@ -242,8 +257,9 @@ STRENGTHS: [One sentence - what's working well]"""
                 strengths=""
             )
 
-    def chat(self, document: str, messages: list[ChatMessage]) -> str:
+    def chat(self, document: str, messages: list[ChatMessage], document_type: str = "markdown", writing_style: str = None) -> str:
         """Chat about the document using GPT."""
+        effective_style = writing_style if writing_style is not None else self.writing_style
         try:
             system_content = (
                 "You are a helpful writing assistant. The user is working on a document and may ask "
@@ -251,8 +267,9 @@ STRENGTHS: [One sentence - what's working well]"""
                 f"Here is the document they are working on (truncated):\n---\n{document[:4000]}\n---\n\n"
                 "Be concise and helpful. Reference specific parts of the document when relevant."
             )
-            if self.writing_style:
-                system_content += f"\n\nThe user's writing style preference:\n{self.writing_style}"
+            system_content += _latex_note(document_type)
+            if effective_style:
+                system_content += f"\n\nThe user's writing style preference:\n{effective_style}"
 
             api_messages = []
             for m in messages[-10:]:
@@ -268,7 +285,7 @@ STRENGTHS: [One sentence - what's working well]"""
         except Exception as e:
             return f"[Error: {e}]"
 
-    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int) -> str:
+    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int, document_type: str = "markdown") -> str:
         """Generate inline completion at cursor position."""
         try:
             lines = document.split('\n')
@@ -278,10 +295,13 @@ STRENGTHS: [One sentence - what's working well]"""
                 before_lines.append(lines[cursor_line][:cursor_ch])
             text_before = '\n'.join(before_lines)[-1500:]
 
+            system_msg = "You are a writing autocomplete engine. Output ONLY the natural continuation of the text. Write 1-2 sentences max. No explanations, no quotes, no prefixes."
+            system_msg += _latex_note(document_type)
+
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a writing autocomplete engine. Output ONLY the natural continuation of the text. Write 1-2 sentences max. No explanations, no quotes, no prefixes."},
+                    {"role": "system", "content": system_msg},
                     {"role": "user", "content": f"Continue this text naturally:\n\n{text_before}"},
                 ],
                 temperature=0.3,
@@ -425,9 +445,11 @@ class ClaudeProvider(AIProvider):
     def generate_suggestions(
         self,
         context: WritingContext,
-        count: int = 3
+        count: int = 3,
+        writing_style: str = None
     ) -> list[Suggestion]:
         """Generate paragraph continuation suggestions using Claude."""
+        effective_style = writing_style if writing_style is not None else self.writing_style
         prompt = self._build_paragraph_prompt(context, count)
 
         try:
@@ -437,8 +459,9 @@ class ClaudeProvider(AIProvider):
                 "2. When the user is on an empty line, suggest the next paragraph\n"
                 "Always match the document's tone and style. Output clean text only."
             )
-            if self.writing_style:
-                system_content += f"\n\nThe user has specified this writing style preference:\n{self.writing_style}"
+            system_content += _latex_note(context)
+            if effective_style:
+                system_content += f"\n\nThe user has specified this writing style preference:\n{effective_style}"
 
             response = self.client.messages.create(
                 model=self.model,
@@ -462,9 +485,11 @@ class ClaudeProvider(AIProvider):
         self,
         document: str,
         section_heading: str,
-        outline: list[str]
+        outline: list[str],
+        writing_style: str = None
     ) -> SectionContent:
         """Generate content for a section."""
+        effective_style = writing_style if writing_style is not None else self.writing_style
         prompt = f"""You are writing content for a document. Here is the current document:
 
 ---
@@ -486,8 +511,8 @@ Write only the section content, no heading."""
 
         try:
             system_content = "You are a skilled writer helping complete a document."
-            if self.writing_style:
-                system_content += f"\n\nFollow this writing style preference:\n{self.writing_style}"
+            if effective_style:
+                system_content += f"\n\nFollow this writing style preference:\n{effective_style}"
 
             response = self.client.messages.create(
                 model=self.model,
@@ -509,7 +534,7 @@ Write only the section content, no heading."""
                 content=f"[Error generating content: {str(e)}]"
             )
 
-    def review_document(self, document: str) -> DocumentReview:
+    def review_document(self, document: str, document_type: str = "markdown") -> DocumentReview:
         """Review document like a tough editor/prosecuting attorney."""
         prompt = f"""Review this document as a critical editor and prosecuting attorney.
 
@@ -527,17 +552,20 @@ WEAKNESSES: [One sentence - the key hole in the argument, like a prosecutor woul
 STRENGTHS: [One sentence - what's working well]"""
 
         try:
+            system_content = (
+                "You are a sharp, experienced editor with high standards. "
+                "You give honest, specific feedback - not generic praise or vague criticism. "
+                "When you find problems, you explain exactly what's wrong and why it matters."
+            )
+            system_content += _latex_note(document_type)
+
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=1000,
                 messages=[
                     {"role": "user", "content": prompt}
                 ],
-                system=(
-                    "You are a sharp, experienced editor with high standards. "
-                    "You give honest, specific feedback - not generic praise or vague criticism. "
-                    "When you find problems, you explain exactly what's wrong and why it matters."
-                )
+                system=system_content
             )
 
             return self._parse_review(response.content[0].text)
@@ -549,8 +577,9 @@ STRENGTHS: [One sentence - what's working well]"""
                 strengths=""
             )
 
-    def chat(self, document: str, messages: list[ChatMessage]) -> str:
+    def chat(self, document: str, messages: list[ChatMessage], document_type: str = "markdown", writing_style: str = None) -> str:
         """Chat about the document using Claude."""
+        effective_style = writing_style if writing_style is not None else self.writing_style
         try:
             system_content = (
                 "You are a helpful writing assistant. The user is working on a document and may ask "
@@ -558,8 +587,9 @@ STRENGTHS: [One sentence - what's working well]"""
                 f"Here is the document they are working on (truncated):\n---\n{document[:4000]}\n---\n\n"
                 "Be concise and helpful. Reference specific parts of the document when relevant."
             )
-            if self.writing_style:
-                system_content += f"\n\nThe user's writing style preference:\n{self.writing_style}"
+            system_content += _latex_note(document_type)
+            if effective_style:
+                system_content += f"\n\nThe user's writing style preference:\n{effective_style}"
 
             api_messages = []
             for m in messages[-10:]:
@@ -575,7 +605,7 @@ STRENGTHS: [One sentence - what's working well]"""
         except Exception as e:
             return f"[Error: {e}]"
 
-    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int) -> str:
+    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int, document_type: str = "markdown") -> str:
         """Generate inline completion at cursor position."""
         try:
             lines = document.split('\n')
@@ -584,13 +614,16 @@ STRENGTHS: [One sentence - what's working well]"""
                 before_lines.append(lines[cursor_line][:cursor_ch])
             text_before = '\n'.join(before_lines)[-1500:]
 
+            system_msg = "You are a writing autocomplete engine. Output ONLY the natural continuation of the text. Write 1-2 sentences max. No explanations, no quotes, no prefixes."
+            system_msg += _latex_note(document_type)
+
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=100,
                 messages=[
                     {"role": "user", "content": f"Continue this text naturally:\n\n{text_before}"},
                 ],
-                system="You are a writing autocomplete engine. Output ONLY the natural continuation of the text. Write 1-2 sentences max. No explanations, no quotes, no prefixes.",
+                system=system_msg,
             )
             return response.content[0].text.strip()
         except Exception as e:
@@ -717,7 +750,8 @@ class MockProvider(AIProvider):
     def generate_suggestions(
         self,
         context: WritingContext,
-        count: int = 3
+        count: int = 3,
+        writing_style: str = None
     ) -> list[Suggestion]:
         """Generate mock suggestions based on mode."""
         if context.is_empty_line or not context.current_paragraph.strip():
@@ -764,7 +798,8 @@ class MockProvider(AIProvider):
         self,
         document: str,
         section_heading: str,
-        outline: list[str]
+        outline: list[str],
+        writing_style: str = None
     ) -> SectionContent:
         """Generate mock section content."""
         return SectionContent(
@@ -776,7 +811,7 @@ The topic is important because it relates to the overall theme of the document. 
 First, we should understand the foundational concepts. Second, we can explore the practical applications. Finally, we'll examine the implications for the broader context."""
         )
 
-    def review_document(self, document: str) -> DocumentReview:
+    def review_document(self, document: str, document_type: str = "markdown") -> DocumentReview:
         """Generate mock document review."""
         return DocumentReview(
             critique="The prose meanders in places—tighten the opening and cut the hedging qualifiers.",
@@ -784,12 +819,12 @@ First, we should understand the foundational concepts. Second, we can explore th
             strengths="The concrete examples are vivid and the closing pulls the threads together well."
         )
 
-    def chat(self, document: str, messages: list[ChatMessage]) -> str:
+    def chat(self, document: str, messages: list[ChatMessage], document_type: str = "markdown", writing_style: str = None) -> str:
         """Return a canned chat response."""
         last_msg = messages[-1].content if messages else ""
         return f"That's an interesting point about your document. Based on what you've written, I'd suggest focusing on strengthening the core argument and adding more specific examples."
 
-    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int) -> str:
+    def inline_complete(self, document: str, cursor_line: int, cursor_ch: int, document_type: str = "markdown") -> str:
         """Return a canned inline completion."""
         return " and this leads to several important considerations worth exploring further."
 

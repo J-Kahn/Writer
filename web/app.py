@@ -7,7 +7,9 @@ Reuses existing AI client, config, and document parser code.
 
 import sys
 import os
+import json
 import subprocess
+import threading
 from pathlib import Path
 from functools import wraps
 
@@ -18,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
 from config import load_config
 from ai_client import create_provider, WritingContext, extract_paragraphs, ChatMessage
-from document_parser import parse_markdown, get_current_section
+from document_parser import parse_markdown, parse_latex, get_current_section
 
 app = Flask(__name__, static_folder="static")
 
@@ -26,6 +28,43 @@ app = Flask(__name__, static_folder="static")
 writer_config = None
 ai_provider = None
 documents_dir = None
+
+
+_metadata_lock = threading.Lock()
+_metadata_file = Path.home() / ".writer" / "document_metadata.json"
+
+
+def _load_metadata():
+    """Load document metadata from JSON file."""
+    with _metadata_lock:
+        if _metadata_file.exists():
+            try:
+                return json.loads(_metadata_file.read_text())
+            except (json.JSONDecodeError, IOError):
+                pass
+        return {}
+
+
+def _save_metadata(data):
+    """Save document metadata to JSON file."""
+    with _metadata_lock:
+        _metadata_file.parent.mkdir(parents=True, exist_ok=True)
+        _metadata_file.write_text(json.dumps(data, indent=2))
+
+
+def get_document_writing_style(filepath):
+    """Get effective writing style for a document.
+
+    Priority: per-document style > global config > None.
+    """
+    if filepath:
+        meta = _load_metadata()
+        doc_style = meta.get(filepath, {}).get("writing_style")
+        if doc_style:
+            return doc_style
+    if writer_config and writer_config.editor.writing_style:
+        return writer_config.editor.writing_style
+    return None
 
 
 def _load_secret_key():
@@ -187,6 +226,40 @@ def delete_file(filepath):
     if not fpath.exists():
         return jsonify({"error": "Not found"}), 404
     fpath.unlink()
+    return jsonify({"status": "ok"})
+
+
+# --- Document Metadata ---
+
+@app.route("/api/meta/<path:filepath>", methods=["GET"])
+@login_required
+def get_meta(filepath):
+    """Get per-document metadata (writing style)."""
+    meta = _load_metadata()
+    doc_meta = meta.get(filepath, {})
+    global_style = writer_config.editor.writing_style if writer_config else None
+    return jsonify({
+        "writing_style": doc_meta.get("writing_style", ""),
+        "global_writing_style": global_style or "",
+    })
+
+
+@app.route("/api/meta/<path:filepath>", methods=["PUT"])
+@login_required
+def set_meta(filepath):
+    """Set per-document metadata (writing style)."""
+    data = request.get_json()
+    style = data.get("writing_style", "").strip()
+    meta = _load_metadata()
+    if style:
+        meta.setdefault(filepath, {})["writing_style"] = style
+    else:
+        # Remove per-doc override
+        if filepath in meta:
+            meta[filepath].pop("writing_style", None)
+            if not meta[filepath]:
+                del meta[filepath]
+    _save_metadata(meta)
     return jsonify({"status": "ok"})
 
 
@@ -387,6 +460,99 @@ def git_push():
     return jsonify({"error": out}), 400
 
 
+# --- LaTeX Compilation ---
+
+def _parse_latex_log(log_text):
+    """Parse LaTeX log file for errors and warnings."""
+    errors = []
+    warnings = []
+    for line in log_text.split('\n'):
+        line = line.strip()
+        if line.startswith('!') and line not in errors:
+            errors.append(line)
+        elif ('LaTeX Warning:' in line or 'Overfull' in line or 'Underfull' in line) and line not in warnings:
+            warnings.append(line)
+        if len(errors) >= 20:
+            break
+        if len(warnings) >= 20:
+            break
+    return errors[:20], warnings[:20]
+
+
+@app.route("/api/latex/compile/<path:filepath>", methods=["POST"])
+@login_required
+def latex_compile(filepath):
+    """Compile a LaTeX file to PDF."""
+    fpath = safe_path(filepath)
+    if fpath is None:
+        return jsonify({"error": "Invalid path"}), 400
+    if not str(fpath).endswith('.tex'):
+        return jsonify({"error": "Not a .tex file"}), 400
+    if not fpath.exists():
+        return jsonify({"error": "File not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    engine = data.get("engine", "pdflatex")
+    if engine not in ("pdflatex", "xelatex", "lualatex"):
+        engine = "pdflatex"
+
+    # Optionally save content before compiling
+    content = data.get("content")
+    if content is not None:
+        fpath.write_text(content)
+
+    file_dir = str(fpath.parent)
+    filename = fpath.name
+
+    try:
+        result = subprocess.run(
+            [engine, "-interaction=nonstopmode", "-halt-on-error", filename],
+            cwd=file_dir,
+            capture_output=True, text=True, timeout=60,
+        )
+
+        # Parse log file
+        log_file = fpath.with_suffix('.log')
+        log_text = log_file.read_text() if log_file.exists() else ""
+        errors, warnings = _parse_latex_log(log_text)
+
+        pdf_file = fpath.with_suffix('.pdf')
+        if pdf_file.exists() and result.returncode == 0:
+            return jsonify({
+                "status": "ok",
+                "pdf_path": filepath.rsplit('.', 1)[0] + '.pdf',
+                "errors": errors,
+                "warnings": warnings,
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "errors": errors if errors else [result.stderr[:500] or "Compilation failed"],
+                "warnings": warnings,
+            }), 400
+
+    except subprocess.TimeoutExpired:
+        return jsonify({"status": "error", "errors": ["Compilation timed out (60s limit)"], "warnings": []}), 400
+    except FileNotFoundError:
+        return jsonify({"status": "error", "errors": [f"LaTeX engine '{engine}' not found. Install texlive."], "warnings": []}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "errors": [str(e)], "warnings": []}), 500
+
+
+@app.route("/api/latex/pdf/<path:filepath>", methods=["GET"])
+@login_required
+def latex_pdf(filepath):
+    """Serve a compiled PDF file."""
+    fpath = safe_path(filepath)
+    if fpath is None:
+        return jsonify({"error": "Invalid path"}), 400
+    if not str(fpath).endswith('.pdf'):
+        return jsonify({"error": "Not a PDF file"}), 400
+    if not fpath.exists():
+        return jsonify({"error": "PDF not found. Compile first."}), 404
+    return send_from_directory(str(fpath.parent), fpath.name, mimetype='application/pdf')
+
+
 # --- WebSocket Events ---
 
 def register_socket_events(socketio):
@@ -403,8 +569,12 @@ def register_socket_events(socketio):
         """Parse document and return outline."""
         content = data.get("content", "")
         cursor_line = data.get("cursor_line", 1)
+        filename = data.get("filename", "")
 
-        outline = parse_markdown(content)
+        if filename and filename.endswith('.tex'):
+            outline = parse_latex(content)
+        else:
+            outline = parse_markdown(content)
         current = get_current_section(outline, cursor_line)
 
         items = []
@@ -446,6 +616,8 @@ def register_socket_events(socketio):
 
             mode = "next_paragraph" if (is_empty or not current_para.strip()) else "alternatives"
 
+            doc_type = "latex" if filename.endswith('.tex') else "markdown"
+
             context = WritingContext(
                 full_document=content,
                 current_paragraph=current_para,
@@ -453,14 +625,17 @@ def register_socket_events(socketio):
                 paragraph_after=para_after,
                 cursor_line=cursor_line,
                 filename=filename,
-                document_type="markdown",
+                document_type=doc_type,
                 is_empty_line=is_empty,
             )
+
+            effective_style = get_document_writing_style(filename)
 
             try:
                 suggestions = ai_provider.generate_suggestions(
                     context,
                     count=writer_config.display.suggestion_count,
+                    writing_style=effective_style,
                 )
                 result = [{"text": s.text, "confidence": s.confidence, "description": s.description}
                           for s in suggestions]
@@ -478,6 +653,8 @@ def register_socket_events(socketio):
 
         def do_review():
             content = data.get("content", "")
+            filename = data.get("filename", "")
+            doc_type = "latex" if filename.endswith('.tex') else "markdown"
             if not content.strip():
                 socketio.emit("review_result", {
                     "critique": "Document is empty.",
@@ -487,7 +664,7 @@ def register_socket_events(socketio):
                 return
 
             try:
-                review = ai_provider.review_document(content)
+                review = ai_provider.review_document(content, document_type=doc_type)
                 socketio.emit("review_result", {
                     "critique": review.critique,
                     "weaknesses": review.weaknesses,
@@ -511,6 +688,7 @@ def register_socket_events(socketio):
             content = data.get("content", "")
             section_heading = data.get("heading", "")
             outline_headings = data.get("outline", [])
+            filename = data.get("filename", "")
 
             if not section_heading:
                 socketio.emit("fill_result", {
@@ -519,8 +697,10 @@ def register_socket_events(socketio):
                 }, to=sid)
                 return
 
+            effective_style = get_document_writing_style(filename)
+
             try:
-                result = ai_provider.fill_section(content, section_heading, outline_headings)
+                result = ai_provider.fill_section(content, section_heading, outline_headings, writing_style=effective_style)
                 socketio.emit("fill_result", {
                     "heading": result.heading,
                     "content": result.content,
@@ -540,11 +720,15 @@ def register_socket_events(socketio):
 
         def do_chat():
             document = data.get("document", "")
+            filename = data.get("filename", "")
+            doc_type = "latex" if filename.endswith('.tex') else "markdown"
             raw_messages = data.get("messages", [])
             messages = [ChatMessage(role=m["role"], content=m["content"]) for m in raw_messages]
 
+            effective_style = get_document_writing_style(filename)
+
             try:
-                response = ai_provider.chat(document, messages)
+                response = ai_provider.chat(document, messages, document_type=doc_type, writing_style=effective_style)
             except Exception as e:
                 response = f"[Error: {e}]"
 
@@ -562,9 +746,11 @@ def register_socket_events(socketio):
             cursor_line = data.get("cursor_line", 0)
             cursor_ch = data.get("cursor_ch", 0)
             request_id = data.get("request_id", 0)
+            filename = data.get("filename", "")
+            doc_type = "latex" if filename.endswith('.tex') else "markdown"
 
             try:
-                text = ai_provider.inline_complete(document, cursor_line, cursor_ch)
+                text = ai_provider.inline_complete(document, cursor_line, cursor_ch, document_type=doc_type)
             except Exception as e:
                 text = ""
 
@@ -576,6 +762,91 @@ def register_socket_events(socketio):
             }, to=sid)
 
         socketio.start_background_task(do_inline_complete)
+
+    @socketio.on("request_compile")
+    def handle_compile(data):
+        """Compile LaTeX file in background thread."""
+        sid = request.sid
+
+        def do_compile():
+            filepath = data.get("filepath", "")
+            engine = data.get("engine", "pdflatex")
+            content = data.get("content")
+
+            if engine not in ("pdflatex", "xelatex", "lualatex"):
+                engine = "pdflatex"
+
+            fpath = safe_path(filepath)
+            if fpath is None or not str(fpath).endswith('.tex'):
+                socketio.emit("compile_result", {
+                    "status": "error",
+                    "errors": ["Invalid file path"],
+                    "warnings": [],
+                }, to=sid)
+                return
+
+            # Save content if provided
+            if content is not None:
+                fpath.parent.mkdir(parents=True, exist_ok=True)
+                fpath.write_text(content)
+
+            if not fpath.exists():
+                socketio.emit("compile_result", {
+                    "status": "error",
+                    "errors": ["File not found"],
+                    "warnings": [],
+                }, to=sid)
+                return
+
+            file_dir = str(fpath.parent)
+            filename = fpath.name
+
+            try:
+                result = subprocess.run(
+                    [engine, "-interaction=nonstopmode", "-halt-on-error", filename],
+                    cwd=file_dir,
+                    capture_output=True, text=True, timeout=60,
+                )
+
+                log_file = fpath.with_suffix('.log')
+                log_text = log_file.read_text() if log_file.exists() else ""
+                errors, warnings = _parse_latex_log(log_text)
+
+                pdf_file = fpath.with_suffix('.pdf')
+                if pdf_file.exists() and result.returncode == 0:
+                    socketio.emit("compile_result", {
+                        "status": "ok",
+                        "pdf_path": filepath.rsplit('.', 1)[0] + '.pdf',
+                        "errors": errors,
+                        "warnings": warnings,
+                    }, to=sid)
+                else:
+                    socketio.emit("compile_result", {
+                        "status": "error",
+                        "errors": errors if errors else [result.stderr[:500] or "Compilation failed"],
+                        "warnings": warnings,
+                    }, to=sid)
+
+            except subprocess.TimeoutExpired:
+                socketio.emit("compile_result", {
+                    "status": "error",
+                    "errors": ["Compilation timed out (60s limit)"],
+                    "warnings": [],
+                }, to=sid)
+            except FileNotFoundError:
+                socketio.emit("compile_result", {
+                    "status": "error",
+                    "errors": [f"LaTeX engine '{engine}' not found. Install texlive."],
+                    "warnings": [],
+                }, to=sid)
+            except Exception as e:
+                socketio.emit("compile_result", {
+                    "status": "error",
+                    "errors": [str(e)],
+                    "warnings": [],
+                }, to=sid)
+
+        socketio.start_background_task(do_compile)
 
 
 def _is_section_empty(item, lines):
