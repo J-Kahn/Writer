@@ -120,6 +120,12 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 }
 .CodeMirror-dialog button:hover { background: var(--bg-hover) !important; color: var(--text) !important; }
 
+/* Spellcheck underline - override library default red background */
+.cm-spell-error:not(.cm-url):not(.cm-comment):not(.cm-tag):not(.cm-word) {
+  background: none !important;
+  border-bottom: 2px dotted var(--red) !important;
+}
+
 /* Ghost text for inline autocomplete */
 .ghost-text {
   color: var(--text-dim);
@@ -361,7 +367,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
       <span class="sep">|</span>
       <button onclick="triggerImport()">Import</button>
       <button onclick="exportPDF()">PDF</button>
-      <button onclick="exportDOCX()">DOCX</button>
+      <button onclick="exportDOCX()">Word</button>
       <button onclick="downloadFile()">Download</button>
       <span class="sep">|</span>
       <button onclick="showCommitDialog()">Commit</button>
@@ -469,10 +475,13 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 <!-- Socket.IO -->
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 
+<!-- Spellcheck -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror-spell-checker@1.1.2/dist/spell-checker.min.css">
+<script src="https://cdn.jsdelivr.net/npm/codemirror-spell-checker@1.1.2/dist/spell-checker.min.js"></script>
+
 <!-- Import/Export dependencies -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/html-docx-js@0.3.1/dist/html-docx.min.js"></script>
 
 <script>
 // --- State ---
@@ -546,7 +555,6 @@ function createEditor() {
     lineWrapping: true,
     lineNumbers: false,
     styleActiveLine: true,
-    inputStyle: 'contenteditable',
     extraKeys: {
       'Ctrl-S': function() { saveNow(); },
       'Alt-S': function() { requestSuggestions(); },
@@ -560,8 +568,12 @@ function createEditor() {
     },
   });
 
-  // Enable browser spellcheck on the contenteditable element
-  editor.getInputField().setAttribute('spellcheck', 'true');
+  // Enable spell checker overlay
+  if (typeof CodeMirrorSpellChecker !== 'undefined') {
+    CodeMirrorSpellChecker({ codeMirrorInstance: CodeMirror });
+    editor.setOption('mode', 'spell-checker');
+    editor.setOption('backdrop', 'markdown');
+  }
 
   var _changingNow = false;
   editor.on('change', function(cm, change) {
@@ -717,37 +729,34 @@ function exportPDF() {
   window.print();
 }
 
-// --- Export DOCX ---
+// --- Export DOC ---
 function exportDOCX() {
   if (!editor) return;
-  if (typeof htmlDocx === 'undefined') {
-    alert('DOCX library not loaded. Please refresh and try again.');
-    return;
-  }
-  try {
-    var content = editor.getValue();
-    var html = marked.parse(content);
-    var fullHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
-      + 'body { font-family: Calibri, sans-serif; font-size: 11pt; line-height: 1.6; }'
-      + 'h1 { font-size: 20pt; } h2 { font-size: 16pt; } h3 { font-size: 13pt; }'
-      + 'p { margin-bottom: 8pt; }'
-      + 'blockquote { border-left: 3px solid #ccc; padding-left: 10px; color: #555; }'
-      + 'code { background: #f0f0f0; padding: 1px 3px; font-family: Consolas, monospace; font-size: 10pt; }'
-      + '</style></head><body>' + html + '</body></html>';
-    var blob = htmlDocx.asBlob(fullHtml);
-    var name = (currentFile || 'document').replace(/\.md$/, '') + '.docx';
-    var basename = name.split('/').pop();
-    var a = document.createElement('a');
-    var url = URL.createObjectURL(blob);
-    a.href = url;
-    a.download = basename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
-  } catch (e) {
-    alert('DOCX export failed: ' + e.message);
-  }
+  var content = editor.getValue();
+  var html = marked.parse(content);
+  var docHtml = '<html xmlns:o="urn:schemas-microsoft-com:office:office" '
+    + 'xmlns:w="urn:schemas-microsoft-com:office:word" '
+    + 'xmlns="http://www.w3.org/TR/REC-html40">'
+    + '<head><meta charset="utf-8">'
+    + '<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->'
+    + '<style>'
+    + 'body { font-family: Calibri, sans-serif; font-size: 11pt; line-height: 1.6; }'
+    + 'h1 { font-size: 20pt; } h2 { font-size: 16pt; } h3 { font-size: 13pt; }'
+    + 'p { margin-bottom: 8pt; }'
+    + 'blockquote { border-left: 3px solid #ccc; padding-left: 10px; color: #555; }'
+    + 'code { background: #f0f0f0; padding: 1px 3px; font-family: Consolas, monospace; font-size: 10pt; }'
+    + '</style></head><body>' + html + '</body></html>';
+  var blob = new Blob(['\ufeff' + docHtml], { type: 'application/msword' });
+  var name = (currentFile || 'document').replace(/\.md$/, '') + '.doc';
+  var basename = name.split('/').pop();
+  var a = document.createElement('a');
+  var url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = basename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
 }
 
 // --- Outline ---
