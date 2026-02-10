@@ -173,15 +173,15 @@ def _find_git_root(fpath):
     return None
 
 
-def _git_run(git_root, *args):
+def _git_run(git_root, *args, timeout=10):
     """Run a git command and return (success, stdout)."""
     try:
         result = subprocess.run(
             ["git"] + list(args),
             cwd=str(git_root),
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=timeout,
         )
-        return result.returncode == 0, result.stdout.strip()
+        return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
     except Exception as e:
         return False, str(e)
 
@@ -345,7 +345,7 @@ def git_push():
     ok_b, branch = _git_run(git_root, "symbolic-ref", "--short", "HEAD")
     branch = branch if ok_b else "main"
 
-    ok, out = _git_run(git_root, "push", "-u", "origin", branch)
+    ok, out = _git_run(git_root, "push", "-u", "origin", branch, timeout=30)
     if ok:
         return jsonify({"status": "ok", "message": out or "Pushed successfully"})
     return jsonify({"error": out}), 400
