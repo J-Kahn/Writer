@@ -374,6 +374,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
       <button onclick="showHistory()">History</button>
       <span class="sep">|</span>
       <button id="focus-btn" onclick="toggleFocusMode()">Focus</button>
+      <button id="autocomplete-btn" onclick="toggleAutocomplete()">Complete</button>
       <span class="status" id="toolbar-status"></span>
     </div>
     <div class="cm-container" id="cm-container"></div>
@@ -492,6 +493,7 @@ var saveTimeout = null;
 var outlineTimeout = null;
 var suppressSave = false;
 var chatHistory = [];
+var autocompleteEnabled = false;
 var ghostBookmark = null;
 var inlineCompleteTimeout = null;
 var inlineRequestId = 0;
@@ -503,6 +505,13 @@ function esc(str) {
   var d = document.createElement('div');
   d.textContent = str;
   return d.innerHTML;
+}
+
+// --- Autocomplete Toggle ---
+function toggleAutocomplete() {
+  autocompleteEnabled = !autocompleteEnabled;
+  document.getElementById('autocomplete-btn').classList.toggle('active', autocompleteEnabled);
+  if (!autocompleteEnabled) cancelInlineComplete();
 }
 
 // --- Focus Mode ---
@@ -582,8 +591,8 @@ function createEditor() {
     scheduleOutlineUpdate();
     // Clear existing ghost text but don't cancel pending timeout
     if (ghostBookmark) { ghostBookmark.clear(); ghostBookmark = null; }
-    // Inline autocomplete: trigger on user input
-    if (change.origin === '+input' || change.origin === 'paste') {
+    // Inline autocomplete: trigger on user input (only if enabled)
+    if (autocompleteEnabled && (change.origin === '+input' || change.origin === 'paste')) {
       scheduleInlineComplete();
     }
     setTimeout(function() { _changingNow = false; }, 0);
