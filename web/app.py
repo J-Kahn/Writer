@@ -230,7 +230,11 @@ def _git_auto_commit(git_root, fpath):
 
 def _git_init(dirpath):
     """Initialize a git repo in the given directory."""
-    return _git_run(dirpath, "init")
+    ok, out = _git_run(dirpath, "init")
+    if ok:
+        _git_run(dirpath, "config", "user.name", "Writer")
+        _git_run(dirpath, "config", "user.email", "writer@writer.local")
+    return ok, out
 
 
 # --- Git API routes ---
