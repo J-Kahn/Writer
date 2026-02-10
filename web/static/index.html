@@ -304,7 +304,9 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   }
   #outline-panel, #review-panel, #suggestions-panel { display: none; grid-column: 1; grid-row: 2; }
   #editor-panel { grid-column: 1; grid-row: 2; }
-  .app .panel.mobile-active {
+  #outline-panel.mobile-active,
+  #review-panel.mobile-active,
+  #suggestions-panel.mobile-active {
     display: block; position: fixed; inset: 0; z-index: 50;
     background: var(--bg-panel); padding: 12px; overflow-y: auto;
     top: 36px; /* below mobile tab bar */
@@ -321,11 +323,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 <!-- Mobile tab bar -->
 <div class="mobile-tabs" id="mobile-tabs">
-  <div class="mobile-tab active" onclick="showMobilePanel('editor')">Editor</div>
-  <div class="mobile-tab" onclick="showMobilePanel('outline')">Outline</div>
-  <div class="mobile-tab" onclick="showMobilePanel('suggest')">Suggest</div>
-  <div class="mobile-tab" onclick="showMobilePanel('review')">Review</div>
-  <div class="mobile-tab" onclick="showMobilePanel('chat')">Chat</div>
+  <div class="mobile-tab active" onclick="showMobilePanel('editor', this)">Editor</div>
+  <div class="mobile-tab" onclick="showMobilePanel('outline', this)">Outline</div>
+  <div class="mobile-tab" onclick="showMobilePanel('suggest', this)">Suggest</div>
+  <div class="mobile-tab" onclick="showMobilePanel('review', this)">Review</div>
+  <div class="mobile-tab" onclick="showMobilePanel('chat', this)">Chat</div>
 </div>
 
 <div class="app">
@@ -1058,13 +1060,13 @@ function acceptGhostText() {
 }
 
 // --- Mobile Panel Switching ---
-function showMobilePanel(name) {
+function showMobilePanel(name, el) {
   // Update active tab
   var tabs = document.querySelectorAll('.mobile-tab');
   for (var i = 0; i < tabs.length; i++) {
     tabs[i].classList.remove('active');
   }
-  event.target.classList.add('active');
+  el.classList.add('active');
 
   // Remove mobile-active from all panels
   var panels = ['outline-panel', 'review-panel', 'suggestions-panel'];
