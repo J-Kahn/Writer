@@ -574,10 +574,16 @@ function connectSocket() {
 }
 
 // --- Editor Setup ---
+// Initialize spell checker mode before editor creation
+var _hasSpellChecker = (typeof CodeMirrorSpellChecker !== 'undefined');
+if (_hasSpellChecker) {
+  CodeMirrorSpellChecker({ codeMirrorInstance: CodeMirror });
+}
+
 function createEditor() {
   var container = document.getElementById('cm-container');
-  editor = CodeMirror(container, {
-    mode: 'markdown',
+  var editorMode = 'markdown';
+  var editorOpts = {
     theme: 'writer',
     lineWrapping: true,
     lineNumbers: false,
@@ -593,14 +599,16 @@ function createEditor() {
         return CodeMirror.Pass;
       },
     },
-  });
+  };
 
-  // Enable spell checker overlay
-  if (typeof CodeMirrorSpellChecker !== 'undefined') {
-    CodeMirrorSpellChecker({ codeMirrorInstance: CodeMirror });
-    editor.setOption('mode', 'spell-checker');
-    editor.setOption('backdrop', 'markdown');
+  if (_hasSpellChecker) {
+    editorOpts.mode = 'spell-checker';
+    editorOpts.backdrop = 'markdown';
+  } else {
+    editorOpts.mode = 'markdown';
   }
+
+  editor = CodeMirror(container, editorOpts);
 
   var _changingNow = false;
   editor.on('change', function(cm, change) {
