@@ -545,7 +545,6 @@ function createEditor() {
     lineNumbers: false,
     styleActiveLine: true,
     inputStyle: 'contenteditable',
-    spellcheck: true,
     extraKeys: {
       'Ctrl-S': function() { saveNow(); },
       'Alt-S': function() { requestSuggestions(); },
@@ -559,18 +558,29 @@ function createEditor() {
     },
   });
 
+  // Enable browser spellcheck on the contenteditable element
+  editor.getInputField().setAttribute('spellcheck', 'true');
+
+  var _changingNow = false;
   editor.on('change', function(cm, change) {
+    _changingNow = true;
     if (!suppressSave) scheduleSave();
     scheduleOutlineUpdate();
+    // Clear existing ghost text but don't cancel pending timeout
+    if (ghostBookmark) { ghostBookmark.clear(); ghostBookmark = null; }
     // Inline autocomplete: trigger on user input
-    clearGhostText();
     if (change.origin === '+input' || change.origin === 'paste') {
       scheduleInlineComplete();
     }
+    setTimeout(function() { _changingNow = false; }, 0);
   });
 
   editor.on('cursorActivity', function() {
-    clearGhostText();
+    // Only cancel inline complete on manual cursor movement (arrow keys, click),
+    // not on cursor movement caused by typing
+    if (!_changingNow) {
+      cancelInlineComplete();
+    }
   });
 }
 
@@ -708,23 +718,34 @@ function exportPDF() {
 // --- Export DOCX ---
 function exportDOCX() {
   if (!editor) return;
-  var content = editor.getValue();
-  var html = marked.parse(content);
-  var fullHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
-    + 'body { font-family: Calibri, sans-serif; font-size: 11pt; line-height: 1.6; }'
-    + 'h1 { font-size: 20pt; } h2 { font-size: 16pt; } h3 { font-size: 13pt; }'
-    + 'p { margin-bottom: 8pt; }'
-    + 'blockquote { border-left: 3px solid #ccc; padding-left: 10px; color: #555; }'
-    + 'code { background: #f0f0f0; padding: 1px 3px; font-family: Consolas, monospace; font-size: 10pt; }'
-    + '</style></head><body>' + html + '</body></html>';
-  var blob = htmlDocx.asBlob(fullHtml);
-  var name = (currentFile || 'document').replace(/\.md$/, '') + '.docx';
-  var basename = name.split('/').pop();
-  var a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = basename;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  if (typeof htmlDocx === 'undefined') {
+    alert('DOCX library not loaded. Please refresh and try again.');
+    return;
+  }
+  try {
+    var content = editor.getValue();
+    var html = marked.parse(content);
+    var fullHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+      + 'body { font-family: Calibri, sans-serif; font-size: 11pt; line-height: 1.6; }'
+      + 'h1 { font-size: 20pt; } h2 { font-size: 16pt; } h3 { font-size: 13pt; }'
+      + 'p { margin-bottom: 8pt; }'
+      + 'blockquote { border-left: 3px solid #ccc; padding-left: 10px; color: #555; }'
+      + 'code { background: #f0f0f0; padding: 1px 3px; font-family: Consolas, monospace; font-size: 10pt; }'
+      + '</style></head><body>' + html + '</body></html>';
+    var blob = htmlDocx.asBlob(fullHtml);
+    var name = (currentFile || 'document').replace(/\.md$/, '') + '.docx';
+    var basename = name.split('/').pop();
+    var a = document.createElement('a');
+    var url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = basename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
+  } catch (e) {
+    alert('DOCX export failed: ' + e.message);
+  }
 }
 
 // --- Outline ---
@@ -1015,11 +1036,15 @@ function showGhostText(text, pos) {
 }
 
 function clearGhostText() {
-  clearTimeout(inlineCompleteTimeout);
   if (ghostBookmark) {
     ghostBookmark.clear();
     ghostBookmark = null;
   }
+}
+
+function cancelInlineComplete() {
+  clearTimeout(inlineCompleteTimeout);
+  clearGhostText();
 }
 
 function acceptGhostText() {
@@ -1239,7 +1264,7 @@ document.addEventListener('DOMContentLoaded', function() {
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
     exitFocusMode();
-    clearGhostText();
+    cancelInlineComplete();
     closeFileBrowser();
     closeModal('commit-modal');
     closeModal('history-modal');
