@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from functools import wraps
 
-from flask import Flask, request, jsonify, send_from_directory, Response
+from flask import Flask, request, jsonify, send_from_directory, redirect, url_for, session
 
 # Add python/ to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
@@ -21,12 +21,23 @@ from ai_client import create_provider, WritingContext, extract_paragraphs, ChatM
 from document_parser import parse_markdown, get_current_section
 
 app = Flask(__name__, static_folder="static")
-app.config["SECRET_KEY"] = os.urandom(24)
 
 # Will be initialized in create_app()
 writer_config = None
 ai_provider = None
 documents_dir = None
+
+
+def _load_secret_key():
+    """Load or generate a persistent secret key."""
+    key_file = Path.home() / ".writer" / "secret_key"
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    if key_file.exists():
+        return key_file.read_bytes()
+    key = os.urandom(32)
+    key_file.write_bytes(key)
+    key_file.chmod(0o600)
+    return key
 
 
 def create_app():
@@ -37,6 +48,10 @@ def create_app():
     ai_provider = create_provider(writer_config)
     documents_dir = Path(writer_config.web.documents_dir).expanduser().resolve()
     documents_dir.mkdir(parents=True, exist_ok=True)
+
+    app.config["SECRET_KEY"] = _load_secret_key()
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
     try:
         from flask_socketio import SocketIO
@@ -55,17 +70,14 @@ def check_auth(username, password):
             password == writer_config.web.password)
 
 
-def requires_auth(f):
-    """HTTP Basic Auth decorator."""
+def login_required(f):
+    """Session-based auth decorator. Redirects to /login if not authenticated."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return Response(
-                "Authentication required.",
-                401,
-                {"WWW-Authenticate": 'Basic realm="Writer"'}
-            )
+        if not session.get("authenticated"):
+            if request.is_json or request.path.startswith("/api/"):
+                return jsonify({"error": "Not authenticated"}), 401
+            return redirect(url_for("login"))
         return f(*args, **kwargs)
     return decorated
 
@@ -80,14 +92,34 @@ def safe_path(requested_path):
 
 # --- HTTP Routes ---
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        if check_auth(username, password):
+            session["authenticated"] = True
+            return redirect(url_for("index"))
+        return send_from_directory(app.static_folder, "login.html"), 401
+    if session.get("authenticated"):
+        return redirect(url_for("index"))
+    return send_from_directory(app.static_folder, "login.html")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.route("/")
-@requires_auth
+@login_required
 def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
 @app.route("/api/files", methods=["GET"])
-@requires_auth
+@login_required
 def list_files():
     """List files and directories. Use ?dir=path to browse subdirectories."""
     subdir = request.args.get("dir", "")
@@ -114,7 +146,7 @@ def list_files():
 
 
 @app.route("/api/files/<path:filepath>", methods=["GET"])
-@requires_auth
+@login_required
 def get_file(filepath):
     """Read a file."""
     fpath = safe_path(filepath)
@@ -126,7 +158,7 @@ def get_file(filepath):
 
 
 @app.route("/api/files/<path:filepath>", methods=["PUT"])
-@requires_auth
+@login_required
 def save_file(filepath):
     """Save/create a file, auto-commit if in a git repo."""
     fpath = safe_path(filepath)
@@ -146,7 +178,7 @@ def save_file(filepath):
 
 
 @app.route("/api/files/<path:filepath>", methods=["DELETE"])
-@requires_auth
+@login_required
 def delete_file(filepath):
     """Delete a file."""
     fpath = safe_path(filepath)
@@ -204,7 +236,7 @@ def _git_init(dirpath):
 # --- Git API routes ---
 
 @app.route("/api/git/commit", methods=["POST"])
-@requires_auth
+@login_required
 def git_commit():
     """Manual commit with a custom message."""
     data = request.get_json()
@@ -231,7 +263,7 @@ def git_commit():
 
 
 @app.route("/api/git/log/<path:filepath>", methods=["GET"])
-@requires_auth
+@login_required
 def git_log(filepath):
     """Get recent git log for a file."""
     fpath = safe_path(filepath)
@@ -257,7 +289,7 @@ def git_log(filepath):
 
 
 @app.route("/api/git/init", methods=["POST"])
-@requires_auth
+@login_required
 def git_init():
     """Initialize a git repo in a directory."""
     data = request.get_json()
@@ -276,7 +308,7 @@ def git_init():
 
 
 @app.route("/api/git/info", methods=["GET"])
-@requires_auth
+@login_required
 def git_info():
     """Get git info (repo status, remote, branch) for a directory."""
     subdir = request.args.get("dir", "")
@@ -299,7 +331,7 @@ def git_info():
 
 
 @app.route("/api/git/remote", methods=["POST"])
-@requires_auth
+@login_required
 def git_set_remote():
     """Set or update the remote origin URL."""
     data = request.get_json()
@@ -329,7 +361,7 @@ def git_set_remote():
 
 
 @app.route("/api/git/push", methods=["POST"])
-@requires_auth
+@login_required
 def git_push():
     """Push current branch to remote origin."""
     data = request.get_json()
@@ -359,12 +391,7 @@ def register_socket_events(socketio):
 
     @socketio.on("connect")
     def handle_connect():
-        # Browser sends Basic Auth creds on the polling handshake request.
-        # If auth headers are present, verify them. The page itself is
-        # already behind auth, so if no auth header (e.g. websocket upgrade),
-        # allow the connection.
-        auth = request.authorization
-        if auth and not check_auth(auth.username, auth.password):
+        if not session.get("authenticated"):
             return False
 
     @socketio.on("request_outline")
