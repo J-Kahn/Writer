@@ -473,7 +473,10 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
           <input type="text" id="git-remote-url" placeholder="Remote URL (e.g. git@github.com:...)" style="flex:1;margin-bottom:0">
           <button class="btn-primary" onclick="setGitRemote()" style="white-space:nowrap">Set</button>
         </div>
-        <button class="btn-secondary" onclick="gitPush()" style="width:100%;border-style:solid">Push</button>
+        <div style="display:flex;gap:6px">
+          <button class="btn-secondary" onclick="gitPull()" style="flex:1;border-style:solid">Pull</button>
+          <button class="btn-secondary" onclick="gitPush()" style="flex:1;border-style:solid">Push</button>
+        </div>
         <div id="git-result" style="margin-top:6px;font-size:12px"></div>
       </div>
     </div>
@@ -1519,6 +1522,30 @@ function setGitRemote() {
     } else {
       resultEl.innerHTML = '<span style="color:var(--green)">Remote set</span>';
       setTimeout(function() { resultEl.innerHTML = ''; }, 2000);
+    }
+  })
+  .catch(function(e) {
+    resultEl.innerHTML = '<span style="color:var(--red)">Error: ' + esc(e.message) + '</span>';
+  });
+}
+
+function gitPull() {
+  var resultEl = document.getElementById('git-result');
+  resultEl.innerHTML = '<span style="color:var(--yellow)">Pulling...</span>';
+  fetch('/api/git/pull', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir: browseDir }),
+  })
+  .then(function(resp) { return resp.json(); })
+  .then(function(data) {
+    if (data.error) {
+      resultEl.innerHTML = '<span style="color:var(--red)">' + esc(data.error) + '</span>';
+    } else {
+      resultEl.innerHTML = '<span style="color:var(--green)">Pulled!</span>';
+      setTimeout(function() { resultEl.innerHTML = ''; }, 2000);
+      // Reload current file if one is open, in case it changed
+      if (currentFile) { openFile(currentFile); }
     }
   })
   .catch(function(e) {

@@ -460,6 +460,26 @@ def git_push():
     return jsonify({"error": out}), 400
 
 
+@app.route("/api/git/pull", methods=["POST"])
+@login_required
+def git_pull():
+    """Pull current branch from remote origin."""
+    data = request.get_json()
+    subdir = data.get("dir", "")
+    target = safe_path(subdir) if subdir else documents_dir
+    if target is None:
+        return jsonify({"error": "Invalid directory"}), 400
+
+    git_root = _find_git_root(target)
+    if not git_root:
+        return jsonify({"error": "Not a git repository"}), 400
+
+    ok, out = _git_run(git_root, "pull", "--ff-only", "origin", timeout=30)
+    if ok:
+        return jsonify({"status": "ok", "message": out or "Pulled successfully"})
+    return jsonify({"error": out}), 400
+
+
 # --- LaTeX Compilation ---
 
 def _parse_latex_log(log_text):
