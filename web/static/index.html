@@ -391,6 +391,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
       <button id="focus-btn" onclick="toggleFocusMode()">Focus</button>
       <button id="autocomplete-btn" onclick="toggleAutocomplete()">Complete</button>
       <button onclick="showStyleDialog()">Style</button>
+      <button onclick="showBibtexDialog()">BibTeX</button>
       <span class="sep">|</span>
       <button onclick="location.href='/logout'">Logout</button>
       <span class="status" id="toolbar-status"></span>
@@ -522,6 +523,36 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
       <button class="btn-secondary" onclick="closeModal('style-modal')">Cancel</button>
     </div>
     <div id="style-result" style="margin-top:8px;font-size:12px"></div>
+  </div>
+</div>
+
+<!-- BibTeX Lookup Modal -->
+<div class="modal-overlay" id="bibtex-modal">
+  <div class="modal" style="width:600px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column">
+    <h3>CrossRef BibTeX Lookup</h3>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <input type="text" id="bib-author" placeholder="Author (e.g. Barth, Kahn)" style="flex:1">
+      <input type="text" id="bib-title" placeholder="Title keywords (optional)" style="flex:1">
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+      <button class="btn-primary" onclick="searchCrossRef()">Search</button>
+      <span id="bib-status" style="font-size:11px;color:var(--text-dim)"></span>
+      <span style="margin-left:auto;font-size:11px;color:var(--text-dim)">
+        .bib file: <input type="text" id="bib-file-path" placeholder="refs.bib" style="width:140px;padding:2px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:11px;border-radius:3px">
+      </span>
+    </div>
+    <div id="bib-results" style="flex:1;overflow-y:auto;min-height:100px;max-height:400px"></div>
+    <div id="bib-preview" style="display:none;margin-top:8px">
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">BibTeX Preview:</div>
+      <pre id="bib-preview-text" style="background:var(--bg);padding:8px;border-radius:3px;font-size:11px;white-space:pre-wrap;max-height:120px;overflow-y:auto;border:1px solid var(--border)"></pre>
+      <div class="modal-actions">
+        <button class="btn-primary" onclick="addBibtexToFile()">Add to .bib</button>
+        <button class="btn-secondary" onclick="document.getElementById('bib-preview').style.display='none'">Cancel</button>
+      </div>
+    </div>
+    <div class="modal-actions" style="margin-top:8px">
+      <button class="btn-secondary" onclick="closeModal('bibtex-modal')">Close</button>
+    </div>
   </div>
 </div>
 
@@ -1661,6 +1692,125 @@ function jumpToLine(lineNum) {
   editor.focus();
   setTimeout(requestOutline, 100);
 }
+
+// --- BibTeX Lookup ---
+
+function showBibtexDialog() {
+  document.getElementById('bib-results').innerHTML = '';
+  document.getElementById('bib-preview').style.display = 'none';
+  document.getElementById('bib-status').textContent = '';
+  // Default .bib path: same directory as current file
+  var bibPath = document.getElementById('bib-file-path').value;
+  if (!bibPath && currentFile) {
+    var dir = currentFile.lastIndexOf('/') >= 0 ? currentFile.substring(0, currentFile.lastIndexOf('/') + 1) : '';
+    document.getElementById('bib-file-path').value = dir + 'refs.bib';
+  } else if (!bibPath) {
+    document.getElementById('bib-file-path').value = 'refs.bib';
+  }
+  document.getElementById('bibtex-modal').classList.add('active');
+  setTimeout(function() { document.getElementById('bib-author').focus(); }, 100);
+}
+
+function searchCrossRef() {
+  var author = document.getElementById('bib-author').value.trim();
+  var title = document.getElementById('bib-title').value.trim();
+  if (!author && !title) { document.getElementById('bib-status').textContent = 'Enter author or title'; return; }
+
+  var statusEl = document.getElementById('bib-status');
+  var resultsEl = document.getElementById('bib-results');
+  statusEl.textContent = 'Searching...';
+  resultsEl.innerHTML = '';
+  document.getElementById('bib-preview').style.display = 'none';
+
+  var params = new URLSearchParams();
+  if (author) params.set('author', author);
+  if (title) params.set('title', title);
+
+  fetch('/api/crossref/search?' + params.toString())
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { statusEl.textContent = 'Error: ' + data.error; return; }
+      var results = data.results || [];
+      statusEl.textContent = results.length + ' result' + (results.length !== 1 ? 's' : '');
+      if (!results.length) { resultsEl.innerHTML = '<div style="color:var(--text-dim);padding:8px">No results found.</div>'; return; }
+
+      var html = '';
+      for (var i = 0; i < results.length; i++) {
+        var r = results[i];
+        html += '<div class="bib-result" data-doi="' + r.doi + '" onclick="selectBibResult(this)" style="padding:8px;border-bottom:1px solid var(--border);cursor:pointer">';
+        html += '<div style="color:var(--accent);font-size:13px">' + escapeHtml(r.title) + '</div>';
+        html += '<div style="font-size:11px;color:var(--text-dim)">' + escapeHtml(r.authors.join(', '));
+        if (r.year) html += ' (' + r.year + ')';
+        if (r.journal) html += ' — ' + escapeHtml(r.journal);
+        html += '</div></div>';
+      }
+      resultsEl.innerHTML = html;
+    })
+    .catch(function(err) { statusEl.textContent = 'Error: ' + err.message; });
+}
+
+function escapeHtml(s) {
+  var d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+}
+
+function selectBibResult(el) {
+  // Highlight selection
+  var prev = document.querySelector('.bib-result.selected');
+  if (prev) prev.classList.remove('selected');
+  el.classList.add('selected');
+  el.style.background = 'var(--bg-hover)';
+  if (prev && prev !== el) prev.style.background = '';
+
+  var doi = el.getAttribute('data-doi');
+  var previewEl = document.getElementById('bib-preview');
+  var previewText = document.getElementById('bib-preview-text');
+  previewText.textContent = 'Loading...';
+  previewEl.style.display = 'block';
+
+  fetch('/api/crossref/bibtex/' + encodeURIComponent(doi))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { previewText.textContent = 'Error: ' + data.error; return; }
+      previewText.textContent = data.bibtex;
+    })
+    .catch(function(err) { previewText.textContent = 'Error: ' + err.message; });
+}
+
+function addBibtexToFile() {
+  var bibtex = document.getElementById('bib-preview-text').textContent;
+  var bibPath = document.getElementById('bib-file-path').value.trim();
+  if (!bibtex || bibtex.startsWith('Error') || bibtex === 'Loading...') return;
+  if (!bibPath) { alert('Enter a .bib file path'); return; }
+
+  var statusEl = document.getElementById('bib-status');
+  statusEl.textContent = 'Adding...';
+
+  fetch('/api/crossref/add', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bib_path: bibPath, bibtex: bibtex }),
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) { statusEl.textContent = 'Error: ' + data.error; return; }
+    statusEl.textContent = 'Added to ' + bibPath;
+    document.getElementById('bib-preview').style.display = 'none';
+    // Deselect
+    var sel = document.querySelector('.bib-result.selected');
+    if (sel) { sel.classList.remove('selected'); sel.style.background = ''; }
+  })
+  .catch(function(err) { statusEl.textContent = 'Error: ' + err.message; });
+}
+
+// Allow Enter to trigger search in bib inputs
+document.addEventListener('DOMContentLoaded', function() {
+  ['bib-author', 'bib-title'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') searchCrossRef();
+    });
+  });
+});
 
 // --- Init ---
 document.addEventListener('DOMContentLoaded', function() {

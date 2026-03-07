@@ -10,6 +10,8 @@ import os
 import json
 import subprocess
 import threading
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from functools import wraps
 
@@ -571,6 +573,123 @@ def latex_pdf(filepath):
     if not fpath.exists():
         return jsonify({"error": "PDF not found. Compile first."}), 404
     return send_from_directory(str(fpath.parent), fpath.name, mimetype='application/pdf')
+
+
+# --- CrossRef BibTeX Lookup ---
+
+def _crossref_get(url):
+    """Make a GET request to CrossRef API."""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Writer/1.0 (mailto:writer@writer.local)",
+    })
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+
+@app.route("/api/crossref/search", methods=["GET"])
+@login_required
+def crossref_search():
+    """Search CrossRef by author and/or title."""
+    author = request.args.get("author", "").strip()
+    title = request.args.get("title", "").strip()
+    rows = min(int(request.args.get("rows", "10")), 20)
+
+    if not author and not title:
+        return jsonify({"error": "Provide author and/or title"}), 400
+
+    params = {"rows": str(rows), "sort": "relevance"}
+    if author and title:
+        params["query.author"] = author
+        params["query.bibliographic"] = title
+    elif author:
+        params["query.author"] = author
+    else:
+        params["query.bibliographic"] = title
+
+    url = "https://api.crossref.org/works?" + urllib.parse.urlencode(params)
+    try:
+        data = _crossref_get(url)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+    results = []
+    for item in data.get("message", {}).get("items", []):
+        authors = []
+        for a in item.get("author", []):
+            name = a.get("family", "")
+            if a.get("given"):
+                name = a["given"] + " " + name
+            authors.append(name)
+
+        title_parts = item.get("title", [])
+        year = ""
+        for date_field in ("published-print", "published-online", "issued"):
+            parts = item.get(date_field, {}).get("date-parts", [[]])
+            if parts and parts[0] and parts[0][0]:
+                year = str(parts[0][0])
+                break
+
+        journal = ""
+        for ct in item.get("container-title", []):
+            journal = ct
+            break
+
+        results.append({
+            "doi": item.get("DOI", ""),
+            "title": title_parts[0] if title_parts else "(no title)",
+            "authors": authors,
+            "year": year,
+            "journal": journal,
+            "type": item.get("type", ""),
+        })
+
+    return jsonify({"results": results})
+
+
+@app.route("/api/crossref/bibtex/<path:doi>", methods=["GET"])
+@login_required
+def crossref_bibtex(doi):
+    """Fetch BibTeX for a DOI from CrossRef."""
+    url = "https://api.crossref.org/works/" + urllib.parse.quote(doi, safe="/")
+    req = urllib.request.Request(url + "/transform/application/x-bibtex", headers={
+        "User-Agent": "Writer/1.0 (mailto:writer@writer.local)",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            bibtex = resp.read().decode()
+        return jsonify({"bibtex": bibtex})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/crossref/add", methods=["POST"])
+@login_required
+def crossref_add_to_bib():
+    """Append a BibTeX entry to a .bib file."""
+    data = request.get_json()
+    bib_path = data.get("bib_path", "").strip()
+    bibtex = data.get("bibtex", "").strip()
+    if not bib_path or not bibtex:
+        return jsonify({"error": "bib_path and bibtex required"}), 400
+
+    fpath = safe_path(bib_path)
+    if fpath is None:
+        return jsonify({"error": "Invalid path"}), 400
+
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    # Append with a blank line separator
+    existing = ""
+    if fpath.exists():
+        existing = fpath.read_text()
+    separator = "\n\n" if existing.strip() else ""
+    fpath.write_text(existing + separator + bibtex + "\n")
+
+    # Auto-commit if in a git repo
+    git_root = _find_git_root(fpath)
+    if git_root:
+        _git_auto_commit(git_root, fpath)
+
+    return jsonify({"status": "ok", "path": bib_path})
 
 
 # --- WebSocket Events ---
