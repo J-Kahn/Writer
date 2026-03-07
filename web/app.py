@@ -657,15 +657,118 @@ def crossref_bibtex(doi):
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             bibtex = resp.read().decode()
+        bibtex = _reformat_bibtex_key(bibtex)
+        bibtex = _format_bibtex(bibtex)
         return jsonify({"bibtex": bibtex})
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 
 
+import re as _re
+
+# Preferred field order for formatted BibTeX
+_BIBTEX_FIELD_ORDER = [
+    "author", "title", "journal", "volume", "number", "pages",
+    "year", "month", "publisher", "doi", "issn", "url",
+]
+
+
+def _reformat_bibtex_key(bibtex):
+    """Rewrite cite key from Author_Year to AuthorYear format."""
+    authors = _re.findall(r'author\s*=\s*\{([^}]+)\}', bibtex, _re.IGNORECASE)
+    years = _re.findall(r'year\s*=\s*\{?(\d{4})\}?', bibtex, _re.IGNORECASE)
+
+    if authors and years:
+        surnames = []
+        for part in _re.split(r'\s+and\s+', authors[0]):
+            part = part.strip()
+            if ',' in part:
+                surnames.append(part.split(',')[0].strip())
+            else:
+                words = part.split()
+                if words:
+                    surnames.append(words[-1].strip())
+        clean = [_re.sub(r'[^A-Za-z]', '', s).capitalize() for s in surnames]
+        new_key = ''.join(clean) + years[0]
+        bibtex = _re.sub(r'(@\w+\s*\{)\s*[^,]+,', r'\g<1>' + new_key + ',', bibtex, count=1)
+
+    return bibtex
+
+
+def _format_bibtex(bibtex):
+    """Pretty-print BibTeX with consistent indentation and field ordering."""
+    # Extract entry type and key
+    m = _re.match(r'(@\w+)\s*\{\s*([^,]+),\s*', bibtex)
+    if not m:
+        return bibtex
+    entry_type = m.group(1).lower()
+    key = m.group(2).strip()
+
+    # Extract fields: handle nested braces
+    fields = {}
+    # Find all field = value pairs
+    for fm in _re.finditer(r'(\w+)\s*=\s*', bibtex[m.end():]):
+        fname = fm.group(1).lower()
+        rest = bibtex[m.end() + fm.end():]
+        # Parse value (braced or bare)
+        val = ""
+        if rest.startswith('{'):
+            depth = 0
+            for i, c in enumerate(rest):
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        val = rest[1:i]
+                        break
+        else:
+            # Bare value (e.g. month = oct)
+            em = _re.match(r'([^,}\s]+)', rest)
+            if em:
+                val = em.group(1)
+        if val or fname not in fields:
+            fields[fname] = val
+
+    # Build output with ordered fields
+    lines = [f"{entry_type}{{{key},"]
+    seen = set()
+    for f in _BIBTEX_FIELD_ORDER:
+        if f in fields:
+            lines.append(f"  {f} = {{{fields[f]}}},")
+            seen.add(f)
+    for f in sorted(fields):
+        if f not in seen:
+            lines.append(f"  {f} = {{{fields[f]}}},")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _extract_bibtex_keys_and_dois(text):
+    """Extract all cite keys and DOIs from a .bib file's text."""
+    keys = set(_re.findall(r'@\w+\s*\{\s*([^,]+),', text))
+    dois = set()
+    for m in _re.finditer(r'doi\s*=\s*\{([^}]+)\}', text, _re.IGNORECASE):
+        dois.add(m.group(1).strip().lower())
+    return keys, dois
+
+
+def _get_bibtex_key(bibtex):
+    """Extract the cite key from a BibTeX entry."""
+    m = _re.match(r'@\w+\s*\{\s*([^,]+),', bibtex)
+    return m.group(1).strip() if m else ""
+
+
+def _get_bibtex_doi(bibtex):
+    """Extract the DOI from a BibTeX entry."""
+    m = _re.search(r'doi\s*=\s*\{([^}]+)\}', bibtex, _re.IGNORECASE)
+    return m.group(1).strip().lower() if m else ""
+
+
 @app.route("/api/crossref/add", methods=["POST"])
 @login_required
 def crossref_add_to_bib():
-    """Append a BibTeX entry to a .bib file."""
+    """Append a BibTeX entry to a .bib file, with duplicate detection."""
     data = request.get_json()
     bib_path = data.get("bib_path", "").strip()
     bibtex = data.get("bibtex", "").strip()
@@ -677,10 +780,20 @@ def crossref_add_to_bib():
         return jsonify({"error": "Invalid path"}), 400
 
     fpath.parent.mkdir(parents=True, exist_ok=True)
-    # Append with a blank line separator
+
+    # Check for duplicates
     existing = ""
     if fpath.exists():
         existing = fpath.read_text()
+    if existing.strip():
+        existing_keys, existing_dois = _extract_bibtex_keys_and_dois(existing)
+        new_key = _get_bibtex_key(bibtex)
+        new_doi = _get_bibtex_doi(bibtex)
+        if new_key and new_key in existing_keys:
+            return jsonify({"error": f"Duplicate: cite key '{new_key}' already exists"}), 409
+        if new_doi and new_doi in existing_dois:
+            return jsonify({"error": f"Duplicate: DOI '{new_doi}' already exists"}), 409
+
     separator = "\n\n" if existing.strip() else ""
     fpath.write_text(existing + separator + bibtex + "\n")
 
@@ -689,7 +802,178 @@ def crossref_add_to_bib():
     if git_root:
         _git_auto_commit(git_root, fpath)
 
-    return jsonify({"status": "ok", "path": bib_path})
+    cite_key = _get_bibtex_key(bibtex)
+    return jsonify({"status": "ok", "path": bib_path, "cite_key": cite_key})
+
+
+@app.route("/api/crossref/bib/<path:bib_path>", methods=["GET"])
+@login_required
+def crossref_list_bib(bib_path):
+    """List entries in a .bib file."""
+    fpath = safe_path(bib_path)
+    if fpath is None:
+        return jsonify({"error": "Invalid path"}), 400
+    if not fpath.exists():
+        return jsonify({"entries": []})
+
+    text = fpath.read_text()
+    entries = []
+    for m in _re.finditer(r'(@\w+)\s*\{\s*([^,]+),', text):
+        entry_type = m.group(1)
+        key = m.group(2).strip()
+        # Extract title and author from the entry block
+        block_start = m.start()
+        # Find the end of this entry (matching closing brace)
+        depth = 0
+        block_end = block_start
+        for i in range(m.end(), len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                if depth == 0:
+                    block_end = i + 1
+                    break
+                depth -= 1
+        block = text[block_start:block_end]
+        title_m = _re.search(r'title\s*=\s*\{([^}]+)\}', block, _re.IGNORECASE)
+        author_m = _re.search(r'author\s*=\s*\{([^}]+)\}', block, _re.IGNORECASE)
+        year_m = _re.search(r'year\s*=\s*\{?(\d{4})\}?', block, _re.IGNORECASE)
+        entries.append({
+            "key": key,
+            "type": entry_type,
+            "title": title_m.group(1) if title_m else "",
+            "author": author_m.group(1) if author_m else "",
+            "year": year_m.group(1) if year_m else "",
+        })
+
+    return jsonify({"entries": entries})
+
+
+@app.route("/api/crossref/bib/<path:bib_path>", methods=["DELETE"])
+@login_required
+def crossref_delete_bib_entry(bib_path):
+    """Delete an entry from a .bib file by cite key."""
+    fpath = safe_path(bib_path)
+    if fpath is None or not fpath.exists():
+        return jsonify({"error": "File not found"}), 404
+
+    key = request.args.get("key", "").strip()
+    if not key:
+        return jsonify({"error": "key parameter required"}), 400
+
+    text = fpath.read_text()
+    # Find and remove the entry
+    pattern = r'\n*@\w+\s*\{\s*' + _re.escape(key) + r'\s*,'
+    m = _re.search(pattern, text)
+    if not m:
+        return jsonify({"error": f"Key '{key}' not found"}), 404
+
+    # Find matching closing brace
+    depth = 0
+    start = m.start()
+    end = start
+    found_open = False
+    for i in range(m.start(), len(text)):
+        if text[i] == '{':
+            depth += 1
+            found_open = True
+        elif text[i] == '}':
+            depth -= 1
+            if found_open and depth == 0:
+                end = i + 1
+                break
+
+    new_text = text[:start] + text[end:]
+    # Clean up multiple blank lines
+    new_text = _re.sub(r'\n{3,}', '\n\n', new_text).strip() + "\n" if new_text.strip() else ""
+    fpath.write_text(new_text)
+
+    git_root = _find_git_root(fpath)
+    if git_root:
+        _git_auto_commit(git_root, fpath)
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/crossref/doi/<path:doi>", methods=["GET"])
+@login_required
+def crossref_doi_lookup(doi):
+    """Look up a single DOI and return formatted BibTeX."""
+    url = "https://api.crossref.org/works/" + urllib.parse.quote(doi, safe="/")
+    req = urllib.request.Request(url + "/transform/application/x-bibtex", headers={
+        "User-Agent": "Writer/1.0 (mailto:writer@writer.local)",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            bibtex = resp.read().decode()
+        bibtex = _reformat_bibtex_key(bibtex)
+        bibtex = _format_bibtex(bibtex)
+        return jsonify({"bibtex": bibtex})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/openalex/search", methods=["GET"])
+@login_required
+def openalex_search():
+    """Fallback search via OpenAlex when CrossRef returns no results."""
+    author = request.args.get("author", "").strip()
+    title = request.args.get("title", "").strip()
+    rows = min(int(request.args.get("rows", "10")), 20)
+
+    if not author and not title:
+        return jsonify({"error": "Provide author or title"}), 400
+
+    # Build OpenAlex search URL
+    search_parts = []
+    if title:
+        search_parts.append(title)
+    if author:
+        search_parts.append(author)
+    search_query = " ".join(search_parts)
+
+    params = {
+        "search": search_query,
+        "per_page": str(rows),
+        "mailto": "writer@writer.local",
+    }
+    if author and not title:
+        params = {
+            "filter": "authorships.author.display_name.search:" + author,
+            "per_page": str(rows),
+            "mailto": "writer@writer.local",
+        }
+
+    url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+    results = []
+    for item in data.get("results", []):
+        authors = [a.get("author", {}).get("display_name", "")
+                   for a in item.get("authorships", [])]
+        year = str(item.get("publication_year", ""))
+        doi = (item.get("doi") or "").replace("https://doi.org/", "")
+        title_val = item.get("title") or "(no title)"
+        journal = ""
+        loc = item.get("primary_location", {}) or {}
+        src = loc.get("source", {}) or {}
+        journal = src.get("display_name", "")
+
+        results.append({
+            "doi": doi,
+            "title": title_val,
+            "authors": authors,
+            "year": year,
+            "journal": journal,
+            "type": item.get("type", ""),
+        })
+
+    return jsonify({"results": results})
 
 
 # --- WebSocket Events ---

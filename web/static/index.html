@@ -528,25 +528,61 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 <!-- BibTeX Lookup Modal -->
 <div class="modal-overlay" id="bibtex-modal">
-  <div class="modal" style="width:600px;max-width:90vw;max-height:80vh;display:flex;flex-direction:column">
-    <h3>CrossRef BibTeX Lookup</h3>
-    <div style="display:flex;gap:8px;margin-bottom:8px">
-      <input type="text" id="bib-author" placeholder="Author (e.g. Barth, Kahn)" style="flex:1">
-      <input type="text" id="bib-title" placeholder="Title keywords (optional)" style="flex:1">
+  <div class="modal" style="width:640px;max-width:90vw;max-height:85vh;display:flex;flex-direction:column">
+    <h3>BibTeX Lookup</h3>
+    <!-- Tab bar -->
+    <div style="display:flex;gap:0;margin-bottom:10px;border-bottom:1px solid var(--border)">
+      <button class="btn-secondary bib-tab active" data-tab="search" onclick="switchBibTab('search')" style="border-bottom:none;border-radius:3px 3px 0 0">Search</button>
+      <button class="btn-secondary bib-tab" data-tab="doi" onclick="switchBibTab('doi')" style="border-bottom:none;border-radius:3px 3px 0 0">DOI Lookup</button>
+      <button class="btn-secondary bib-tab" data-tab="manage" onclick="switchBibTab('manage')" style="border-bottom:none;border-radius:3px 3px 0 0">Manage .bib</button>
     </div>
-    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-      <button class="btn-primary" onclick="searchCrossRef()">Search</button>
-      <span id="bib-status" style="font-size:11px;color:var(--text-dim)"></span>
-      <span style="margin-left:auto;font-size:11px;color:var(--text-dim)">
-        .bib file: <input type="text" id="bib-file-path" placeholder="refs.bib" style="width:140px;padding:2px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:11px;border-radius:3px">
-      </span>
+    <!-- Search tab -->
+    <div id="bib-tab-search">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input type="text" id="bib-author" placeholder="Author (e.g. Barth, Kahn)" style="flex:1">
+        <input type="text" id="bib-title" placeholder="Title keywords (optional)" style="flex:1">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+        <button class="btn-primary" onclick="searchCrossRef()">Search</button>
+        <label style="font-size:11px;color:var(--text-dim);display:flex;align-items:center;gap:4px">
+          <input type="checkbox" id="bib-fallback" checked> OpenAlex fallback
+        </label>
+        <span id="bib-status" style="font-size:11px;color:var(--text-dim)"></span>
+      </div>
+      <div id="bib-results" style="flex:1;overflow-y:auto;min-height:80px;max-height:300px"></div>
     </div>
-    <div id="bib-results" style="flex:1;overflow-y:auto;min-height:100px;max-height:400px"></div>
+    <!-- DOI tab -->
+    <div id="bib-tab-doi" style="display:none">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input type="text" id="bib-doi-input" placeholder="DOI (e.g. 10.1016/j.jmoneco.2025.103823)" style="flex:1">
+        <button class="btn-primary" onclick="lookupDOI()">Lookup</button>
+      </div>
+      <span id="bib-doi-status" style="font-size:11px;color:var(--text-dim)"></span>
+    </div>
+    <!-- Manage tab -->
+    <div id="bib-tab-manage" style="display:none">
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+        <input type="text" id="bib-manage-filter" placeholder="Filter entries..." style="flex:1" oninput="filterBibEntries()">
+        <button class="btn-secondary" onclick="loadBibEntries()">Refresh</button>
+      </div>
+      <div id="bib-manage-list" style="flex:1;overflow-y:auto;min-height:80px;max-height:350px"></div>
+    </div>
+    <!-- Shared: .bib file path -->
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center;font-size:11px;color:var(--text-dim)">
+      .bib file: <input type="text" id="bib-file-path" placeholder="refs.bib" style="width:160px;padding:2px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:11px;border-radius:3px">
+    </div>
+    <!-- Preview area (shared across tabs) -->
     <div id="bib-preview" style="display:none;margin-top:8px">
-      <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">BibTeX Preview:</div>
-      <pre id="bib-preview-text" style="background:var(--bg);padding:8px;border-radius:3px;font-size:11px;white-space:pre-wrap;max-height:120px;overflow-y:auto;border:1px solid var(--border)"></pre>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span style="font-size:11px;color:var(--text-dim)">BibTeX Preview</span>
+        <span style="font-size:11px;color:var(--text-dim)">Key:</span>
+        <input type="text" id="bib-cite-key" style="width:160px;padding:2px 6px;background:var(--bg);border:1px solid var(--border);color:var(--accent);font-family:inherit;font-size:12px;border-radius:3px" onchange="updateBibCiteKey()">
+      </div>
+      <pre id="bib-preview-text" contenteditable="false" style="background:var(--bg);padding:8px;border-radius:3px;font-size:11px;white-space:pre-wrap;max-height:120px;overflow-y:auto;border:1px solid var(--border)"></pre>
       <div class="modal-actions">
         <button class="btn-primary" onclick="addBibtexToFile()">Add to .bib</button>
+        <button class="btn-secondary" onclick="copyBibtex()">Copy</button>
+        <button class="btn-secondary" onclick="insertCiteCommand()">Insert \cite{}</button>
         <button class="btn-secondary" onclick="document.getElementById('bib-preview').style.display='none'">Cancel</button>
       </div>
     </div>
@@ -1826,6 +1862,7 @@ document.addEventListener('keydown', function(e) {
     closeModal('commit-modal');
     closeModal('history-modal');
     closeModal('style-modal');
+    closeModal('bibtex-modal');
     // Close mobile panels
     var panels = ['outline-panel', 'review-panel', 'suggestions-panel'];
     for (var i = 0; i < panels.length; i++) {
