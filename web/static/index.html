@@ -1731,6 +1731,8 @@ function jumpToLine(lineNum) {
 
 // --- BibTeX Lookup ---
 
+var _bibManageData = []; // cached entries for filtering
+
 function showBibtexDialog() {
   document.getElementById('bib-results').innerHTML = '';
   document.getElementById('bib-preview').style.display = 'none';
@@ -1743,8 +1745,43 @@ function showBibtexDialog() {
   } else if (!bibPath) {
     document.getElementById('bib-file-path').value = 'refs.bib';
   }
+  switchBibTab('search');
   document.getElementById('bibtex-modal').classList.add('active');
   setTimeout(function() { document.getElementById('bib-author').focus(); }, 100);
+}
+
+function switchBibTab(tab) {
+  ['search', 'doi', 'manage'].forEach(function(t) {
+    var el = document.getElementById('bib-tab-' + t);
+    if (el) el.style.display = t === tab ? '' : 'none';
+    var btn = document.querySelector('.bib-tab[data-tab="' + t + '"]');
+    if (btn) {
+      btn.style.borderColor = t === tab ? 'var(--accent)' : '';
+      btn.style.color = t === tab ? 'var(--accent)' : '';
+    }
+  });
+  document.getElementById('bib-preview').style.display = 'none';
+  if (tab === 'manage') loadBibEntries();
+  if (tab === 'doi') setTimeout(function() { document.getElementById('bib-doi-input').focus(); }, 100);
+}
+
+function _renderResults(results, containerEl) {
+  if (!results.length) {
+    containerEl.innerHTML = '<div style="color:var(--text-dim);padding:8px">No results found.</div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < results.length; i++) {
+    var r = results[i];
+    var doiAttr = r.doi ? ' data-doi="' + escapeHtml(r.doi) + '"' : '';
+    html += '<div class="bib-result"' + doiAttr + ' onclick="selectBibResult(this)" style="padding:8px;border-bottom:1px solid var(--border);cursor:pointer">';
+    html += '<div style="color:var(--accent);font-size:13px">' + escapeHtml(r.title) + '</div>';
+    html += '<div style="font-size:11px;color:var(--text-dim)">' + escapeHtml(r.authors.join(', '));
+    if (r.year) html += ' (' + r.year + ')';
+    if (r.journal) html += ' — ' + escapeHtml(r.journal);
+    html += '</div></div>';
+  }
+  containerEl.innerHTML = html;
 }
 
 function searchCrossRef() {
@@ -1754,7 +1791,7 @@ function searchCrossRef() {
 
   var statusEl = document.getElementById('bib-status');
   var resultsEl = document.getElementById('bib-results');
-  statusEl.textContent = 'Searching...';
+  statusEl.textContent = 'Searching CrossRef...';
   resultsEl.innerHTML = '';
   document.getElementById('bib-preview').style.display = 'none';
 
@@ -1767,20 +1804,43 @@ function searchCrossRef() {
     .then(function(data) {
       if (data.error) { statusEl.textContent = 'Error: ' + data.error; return; }
       var results = data.results || [];
-      statusEl.textContent = results.length + ' result' + (results.length !== 1 ? 's' : '');
-      if (!results.length) { resultsEl.innerHTML = '<div style="color:var(--text-dim);padding:8px">No results found.</div>'; return; }
-
-      var html = '';
-      for (var i = 0; i < results.length; i++) {
-        var r = results[i];
-        html += '<div class="bib-result" data-doi="' + r.doi + '" onclick="selectBibResult(this)" style="padding:8px;border-bottom:1px solid var(--border);cursor:pointer">';
-        html += '<div style="color:var(--accent);font-size:13px">' + escapeHtml(r.title) + '</div>';
-        html += '<div style="font-size:11px;color:var(--text-dim)">' + escapeHtml(r.authors.join(', '));
-        if (r.year) html += ' (' + r.year + ')';
-        if (r.journal) html += ' — ' + escapeHtml(r.journal);
-        html += '</div></div>';
+      if (results.length > 0) {
+        statusEl.textContent = results.length + ' result' + (results.length !== 1 ? 's' : '') + ' (CrossRef)';
+        _renderResults(results, resultsEl);
+      } else if (document.getElementById('bib-fallback').checked) {
+        // Try OpenAlex fallback
+        statusEl.textContent = 'No CrossRef results, trying OpenAlex...';
+        fetch('/api/openalex/search?' + params.toString())
+          .then(function(r) { return r.json(); })
+          .then(function(data2) {
+            if (data2.error) { statusEl.textContent = 'Error: ' + data2.error; return; }
+            var results2 = data2.results || [];
+            statusEl.textContent = results2.length + ' result' + (results2.length !== 1 ? 's' : '') + ' (OpenAlex)';
+            _renderResults(results2, resultsEl);
+          })
+          .catch(function(err) { statusEl.textContent = 'Error: ' + err.message; });
+      } else {
+        statusEl.textContent = '0 results';
+        _renderResults([], resultsEl);
       }
-      resultsEl.innerHTML = html;
+    })
+    .catch(function(err) { statusEl.textContent = 'Error: ' + err.message; });
+}
+
+function lookupDOI() {
+  var doi = document.getElementById('bib-doi-input').value.trim();
+  if (!doi) return;
+  // Strip URL prefix if pasted
+  doi = doi.replace(/^https?:\/\/doi\.org\//, '').replace(/^doi:/, '');
+  var statusEl = document.getElementById('bib-doi-status');
+  statusEl.textContent = 'Looking up...';
+
+  fetch('/api/crossref/doi/' + encodeURIComponent(doi))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { statusEl.textContent = 'Error: ' + data.error; return; }
+      statusEl.textContent = 'Found';
+      showBibPreview(data.bibtex);
     })
     .catch(function(err) { statusEl.textContent = 'Error: ' + err.message; });
 }
@@ -1789,27 +1849,58 @@ function escapeHtml(s) {
   var d = document.createElement('div'); d.textContent = s; return d.innerHTML;
 }
 
+function _extractCiteKey(bibtex) {
+  var m = bibtex.match(/@\w+\s*\{\s*([^,]+),/);
+  return m ? m[1].trim() : '';
+}
+
+function showBibPreview(bibtex) {
+  var previewEl = document.getElementById('bib-preview');
+  var previewText = document.getElementById('bib-preview-text');
+  var keyInput = document.getElementById('bib-cite-key');
+  previewText.textContent = bibtex;
+  keyInput.value = _extractCiteKey(bibtex);
+  previewEl.style.display = 'block';
+}
+
 function selectBibResult(el) {
   // Highlight selection
   var prev = document.querySelector('.bib-result.selected');
-  if (prev) prev.classList.remove('selected');
+  if (prev) { prev.classList.remove('selected'); prev.style.background = ''; }
   el.classList.add('selected');
   el.style.background = 'var(--bg-hover)';
-  if (prev && prev !== el) prev.style.background = '';
 
   var doi = el.getAttribute('data-doi');
-  var previewEl = document.getElementById('bib-preview');
+  if (!doi) return;
   var previewText = document.getElementById('bib-preview-text');
   previewText.textContent = 'Loading...';
-  previewEl.style.display = 'block';
+  document.getElementById('bib-preview').style.display = 'block';
+  document.getElementById('bib-cite-key').value = '';
 
   fetch('/api/crossref/bibtex/' + encodeURIComponent(doi))
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.error) { previewText.textContent = 'Error: ' + data.error; return; }
-      previewText.textContent = data.bibtex;
+      showBibPreview(data.bibtex);
     })
     .catch(function(err) { previewText.textContent = 'Error: ' + err.message; });
+}
+
+function updateBibCiteKey() {
+  var newKey = document.getElementById('bib-cite-key').value.trim();
+  if (!newKey) return;
+  var previewText = document.getElementById('bib-preview-text');
+  var bibtex = previewText.textContent;
+  // Replace the key in the entry
+  bibtex = bibtex.replace(/@(\w+)\s*\{\s*[^,]+,/, '@$1{' + newKey + ',');
+  previewText.textContent = bibtex;
+}
+
+function _getBibStatus() {
+  // Return whichever status element is visible
+  var tab = document.getElementById('bib-tab-search').style.display !== 'none' ? 'bib-status' :
+            document.getElementById('bib-tab-doi').style.display !== 'none' ? 'bib-doi-status' : 'bib-status';
+  return document.getElementById(tab);
 }
 
 function addBibtexToFile() {
@@ -1818,7 +1909,7 @@ function addBibtexToFile() {
   if (!bibtex || bibtex.startsWith('Error') || bibtex === 'Loading...') return;
   if (!bibPath) { alert('Enter a .bib file path'); return; }
 
-  var statusEl = document.getElementById('bib-status');
+  var statusEl = _getBibStatus();
   statusEl.textContent = 'Adding...';
 
   fetch('/api/crossref/add', {
@@ -1826,25 +1917,113 @@ function addBibtexToFile() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ bib_path: bibPath, bibtex: bibtex }),
   })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.error) { statusEl.textContent = 'Error: ' + data.error; return; }
-    statusEl.textContent = 'Added to ' + bibPath;
+  .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, status: r.status, data: d }; }); })
+  .then(function(resp) {
+    if (resp.status === 409) {
+      statusEl.innerHTML = '<span style="color:var(--yellow)">' + escapeHtml(resp.data.error) + '</span>';
+      return;
+    }
+    if (resp.data.error) { statusEl.textContent = 'Error: ' + resp.data.error; return; }
+    statusEl.innerHTML = '<span style="color:var(--green)">Added to ' + escapeHtml(bibPath) + '</span>';
     document.getElementById('bib-preview').style.display = 'none';
-    // Deselect
     var sel = document.querySelector('.bib-result.selected');
     if (sel) { sel.classList.remove('selected'); sel.style.background = ''; }
   })
   .catch(function(err) { statusEl.textContent = 'Error: ' + err.message; });
 }
 
-// Allow Enter to trigger search in bib inputs
+function copyBibtex() {
+  var bibtex = document.getElementById('bib-preview-text').textContent;
+  if (!bibtex || bibtex.startsWith('Error') || bibtex === 'Loading...') return;
+  navigator.clipboard.writeText(bibtex).then(function() {
+    var statusEl = _getBibStatus();
+    statusEl.innerHTML = '<span style="color:var(--green)">Copied to clipboard</span>';
+  });
+}
+
+function insertCiteCommand() {
+  var key = document.getElementById('bib-cite-key').value.trim();
+  if (!key) return;
+  if (editor) {
+    var cursor = editor.getCursor();
+    editor.replaceRange('\\cite{' + key + '}', cursor);
+    editor.focus();
+  }
+  var statusEl = _getBibStatus();
+  statusEl.innerHTML = '<span style="color:var(--green)">Inserted \\cite{' + escapeHtml(key) + '}</span>';
+}
+
+// --- Manage .bib ---
+
+function loadBibEntries() {
+  var bibPath = document.getElementById('bib-file-path').value.trim();
+  if (!bibPath) return;
+  var listEl = document.getElementById('bib-manage-list');
+  listEl.innerHTML = '<div style="color:var(--text-dim);padding:8px">Loading...</div>';
+
+  fetch('/api/crossref/bib/' + encodeURIComponent(bibPath))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { listEl.innerHTML = '<div style="color:var(--red);padding:8px">' + escapeHtml(data.error) + '</div>'; return; }
+      _bibManageData = data.entries || [];
+      renderBibEntries(_bibManageData);
+    })
+    .catch(function(err) { listEl.innerHTML = '<div style="color:var(--red);padding:8px">' + escapeHtml(err.message) + '</div>'; });
+}
+
+function renderBibEntries(entries) {
+  var listEl = document.getElementById('bib-manage-list');
+  if (!entries.length) {
+    listEl.innerHTML = '<div style="color:var(--text-dim);padding:8px">No entries' + (document.getElementById('bib-manage-filter').value ? ' matching filter' : '') + '.</div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    html += '<div style="padding:6px 8px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:8px">';
+    html += '<div style="flex:1;min-width:0">';
+    html += '<div style="font-size:12px"><span style="color:var(--accent)">' + escapeHtml(e.key) + '</span> <span style="color:var(--text-dim);font-size:10px">' + escapeHtml(e.type) + '</span></div>';
+    if (e.title) html += '<div style="font-size:11px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(e.title) + '</div>';
+    if (e.author) html += '<div style="font-size:10px;color:var(--text-dim)">' + escapeHtml(e.author) + (e.year ? ' (' + e.year + ')' : '') + '</div>';
+    html += '</div>';
+    html += '<button class="btn-secondary" style="font-size:10px;padding:1px 6px;color:var(--red);flex-shrink:0" onclick="deleteBibEntry(\'' + escapeHtml(e.key).replace(/'/g, "\\'") + '\')">Del</button>';
+    html += '</div>';
+  }
+  listEl.innerHTML = html;
+}
+
+function filterBibEntries() {
+  var q = document.getElementById('bib-manage-filter').value.trim().toLowerCase();
+  if (!q) { renderBibEntries(_bibManageData); return; }
+  var filtered = _bibManageData.filter(function(e) {
+    return (e.key + ' ' + e.title + ' ' + e.author + ' ' + e.year).toLowerCase().indexOf(q) >= 0;
+  });
+  renderBibEntries(filtered);
+}
+
+function deleteBibEntry(key) {
+  if (!confirm('Delete entry "' + key + '"?')) return;
+  var bibPath = document.getElementById('bib-file-path').value.trim();
+  fetch('/api/crossref/bib/' + encodeURIComponent(bibPath) + '?key=' + encodeURIComponent(key), { method: 'DELETE' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { alert(data.error); return; }
+      loadBibEntries();
+    })
+    .catch(function(err) { alert(err.message); });
+}
+
+// Enter triggers in bib inputs
 document.addEventListener('DOMContentLoaded', function() {
   ['bib-author', 'bib-title'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('keydown', function(e) {
       if (e.key === 'Enter') searchCrossRef();
     });
+  });
+  var doiEl = document.getElementById('bib-doi-input');
+  if (doiEl) doiEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') lookupDOI();
   });
 });
 

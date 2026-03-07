@@ -765,6 +765,27 @@ def _get_bibtex_doi(bibtex):
     return m.group(1).strip().lower() if m else ""
 
 
+def _set_bibtex_key(bibtex, new_key):
+    """Replace the cite key in a BibTeX entry."""
+    return _re.sub(r'(@\w+\s*\{)\s*[^,]+,', r'\g<1>' + new_key + ',', bibtex, count=1)
+
+
+def _deduplicate_key(key, existing_keys):
+    """Add a/b/c suffix if key already exists. E.g. BarthKahn2025 -> BarthKahn2025b."""
+    if key not in existing_keys:
+        return key
+    # Check if the base key (without trailing letter) is what collides
+    # Strip any existing suffix letter first
+    base = _re.sub(r'[a-z]$', '', key)
+    # If the bare key exists, it becomes 'a' conceptually; new one gets 'b', 'c', ...
+    for suffix in 'bcdefghijklmnopqrstuvwxyz':
+        candidate = base + suffix
+        if candidate not in existing_keys:
+            return candidate
+    # Extreme fallback
+    return key + '_2'
+
+
 @app.route("/api/crossref/add", methods=["POST"])
 @login_required
 def crossref_add_to_bib():
@@ -781,18 +802,22 @@ def crossref_add_to_bib():
 
     fpath.parent.mkdir(parents=True, exist_ok=True)
 
-    # Check for duplicates
     existing = ""
     if fpath.exists():
         existing = fpath.read_text()
+
+    # Check DOI duplicate (hard duplicate — same paper)
     if existing.strip():
         existing_keys, existing_dois = _extract_bibtex_keys_and_dois(existing)
-        new_key = _get_bibtex_key(bibtex)
         new_doi = _get_bibtex_doi(bibtex)
-        if new_key and new_key in existing_keys:
-            return jsonify({"error": f"Duplicate: cite key '{new_key}' already exists"}), 409
         if new_doi and new_doi in existing_dois:
             return jsonify({"error": f"Duplicate: DOI '{new_doi}' already exists"}), 409
+
+        # Deduplicate key (soft collision — different paper, same authors+year)
+        new_key = _get_bibtex_key(bibtex)
+        if new_key and new_key in existing_keys:
+            deduped = _deduplicate_key(new_key, existing_keys)
+            bibtex = _set_bibtex_key(bibtex, deduped)
 
     separator = "\n\n" if existing.strip() else ""
     fpath.write_text(existing + separator + bibtex + "\n")
