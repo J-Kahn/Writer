@@ -16,6 +16,12 @@ let g:writer_preview_file = g:writer_dir . '/preview_state.json'
 let g:writer_enabled = 1
 let g:writer_python_dir = ''
 
+" Path to this plugin's python/ dir, resolved at load time. resolve() matters:
+" setup.sh symlinks this file into ~/.vim/plugin, and the python/ dir lives next
+" to the real file, not next to the symlink.
+let s:script_dir = fnamemodify(resolve(expand('<sfile>:p')), ':h')
+let s:plugin_python_dir = fnamemodify(s:script_dir, ':h:h') . '/python'
+
 " Preview state
 let s:preview_active = 0
 let s:preview_text = ''
@@ -446,6 +452,253 @@ function! s:SetupAutocommands() abort
 endfunction
 
 " ============================================================================
+" Citations
+" ============================================================================
+
+" Resolve the citation CLI. g:writer_python_dir is set by the launcher; fall
+" back to the plugin's own location so :WriterCite works in a bare vim too.
+function! s:CiteCli() abort
+    if !empty(g:writer_python_dir)
+        let l:path = g:writer_python_dir . '/cite_cli.py'
+        if filereadable(l:path)
+            return l:path
+        endif
+    endif
+    return s:plugin_python_dir . '/cite_cli.py'
+endfunction
+
+" Run a cite_cli subcommand and return the decoded JSON ({} on failure).
+function! s:CiteRun(args) abort
+    let l:cmd = 'python3 ' . shellescape(s:CiteCli()) . ' ' . a:args
+    let l:output = system(l:cmd)
+    if empty(l:output)
+        return {'error': 'No response from cite_cli.py'}
+    endif
+    try
+        return json_decode(l:output)
+    catch
+        return {'error': substitute(l:output, '\n', ' ', 'g')}
+    endtry
+endfunction
+
+" The .bib this buffer writes to: g:writer_bib_file if set, else derived from
+" \bibliography{} / \addbibresource{} / a neighbouring .bib.
+function! s:BibFile() abort
+    if exists('g:writer_bib_file') && !empty(g:writer_bib_file)
+        return g:writer_bib_file
+    endif
+    let l:result = s:CiteRun('bibpaths --doc ' . shellescape(expand('%:p')))
+    let l:paths = get(l:result, 'paths', [])
+    return empty(l:paths) ? '' : l:paths[0]
+endfunction
+
+function! s:FormatResult(item) abort
+    let l:authors = get(a:item, 'authors', [])
+    let l:who = empty(l:authors) ? '?' : l:authors[0]
+    if len(l:authors) > 2
+        let l:who .= ' et al.'
+    elseif len(l:authors) == 2
+        let l:who .= ' & ' . l:authors[1]
+    endif
+    let l:year = get(a:item, 'year', '')
+    let l:journal = get(a:item, 'journal', '')
+    let l:line = l:who . ' (' . (empty(l:year) ? 'n.d.' : l:year) . ') ' . get(a:item, 'title', '')
+    if !empty(l:journal)
+        let l:line .= ' [' . l:journal . ']'
+    endif
+    return l:line
+endfunction
+
+" Fetch the BibTeX for a result, append it to the .bib, insert \cite{key}.
+function! s:CiteChoice(index) abort
+    if a:index <= 0 || a:index > len(s:cite_results)
+        return
+    endif
+    let l:item = s:cite_results[a:index - 1]
+    let l:doi = get(l:item, 'doi', '')
+    if empty(l:doi)
+        echohl WarningMsg | echo 'Writer: That result has no DOI' | echohl None
+        return
+    endif
+
+    let l:bib = s:BibFile()
+    if empty(l:bib)
+        echohl ErrorMsg
+        echo 'Writer: No .bib found. Set g:writer_bib_file or add \bibliography{} to the document.'
+        echohl None
+        return
+    endif
+
+    echo 'Writer: Fetching BibTeX...'
+    let l:res = s:CiteRun('cite --doi ' . shellescape(l:doi) . ' --bib ' . shellescape(l:bib))
+    if has_key(l:res, 'error')
+        echohl ErrorMsg | echo 'Writer: ' . l:res.error | echohl None
+        return
+    endif
+
+    call s:InsertCite(l:res.cite_key)
+    let l:note = get(l:res, 'duplicate', 0) ? ' (already in ' : ' (added to '
+    echo 'Writer: \cite{' . l:res.cite_key . '}' . l:note . fnamemodify(l:bib, ':t') . ')'
+endfunction
+
+" Insert \cite{key} at the cursor, or extend an existing \cite{...} group.
+function! s:InsertCite(key) abort
+    let l:line = getline('.')
+    let l:col = col('.')
+    let l:before = strpart(l:line, 0, l:col)
+    let l:open = strridx(l:before, '\cite{')
+    let l:close = stridx(l:line, '}', l:col - 1)
+
+    if l:open >= 0 && l:close >= 0 && stridx(l:before[l:open :], '}') < 0
+        " Cursor sits inside \cite{...} - add this key to the group
+        let l:inner = strpart(l:line, l:open + 6, l:close - l:open - 6)
+        let l:sep = empty(trim(l:inner)) ? '' : ','
+        let l:new = strpart(l:line, 0, l:close) . l:sep . a:key . strpart(l:line, l:close)
+        call setline('.', l:new)
+        call cursor(line('.'), l:close + len(l:sep) + len(a:key) + 1)
+    else
+        let l:text = '\cite{' . a:key . '}'
+        call setline('.', strpart(l:line, 0, l:col) . l:text . strpart(l:line, l:col))
+        call cursor(line('.'), l:col + len(l:text))
+    endif
+endfunction
+
+" :WriterCite <query>  - search, pick, insert
+function! writer#Cite(query) abort
+    let l:query = trim(a:query)
+    if empty(l:query)
+        let l:query = input('Writer cite (author and/or title): ')
+        redraw
+    endif
+    if empty(l:query)
+        return
+    endif
+
+    echo 'Writer: Searching...'
+    let l:res = s:CiteRun('search --title ' . shellescape(l:query) . ' --rows 10')
+    redraw
+    if has_key(l:res, 'error')
+        echohl ErrorMsg | echo 'Writer: ' . l:res.error | echohl None
+        return
+    endif
+
+    let s:cite_results = get(l:res, 'results', [])
+    if empty(s:cite_results)
+        echo 'Writer: No results for "' . l:query . '"'
+        return
+    endif
+
+    let l:choices = ['Writer: results from ' . get(l:res, 'source', 'crossref')]
+    let l:i = 1
+    for l:item in s:cite_results
+        call add(l:choices, l:i . '. ' . s:FormatResult(l:item))
+        let l:i += 1
+    endfor
+
+    let l:pick = inputlist(l:choices)
+    redraw
+    call s:CiteChoice(l:pick)
+endfunction
+
+" :WriterCiteDoi <doi>  - skip the search, go straight to the DOI
+function! writer#CiteDoi(doi) abort
+    let l:doi = trim(a:doi)
+    if empty(l:doi)
+        echohl WarningMsg | echo 'Writer: Provide a DOI' | echohl None
+        return
+    endif
+    let l:bib = s:BibFile()
+    if empty(l:bib)
+        echohl ErrorMsg | echo 'Writer: No .bib found for this document' | echohl None
+        return
+    endif
+    let l:res = s:CiteRun('cite --doi ' . shellescape(l:doi) . ' --bib ' . shellescape(l:bib))
+    if has_key(l:res, 'error')
+        echohl ErrorMsg | echo 'Writer: ' . l:res.error | echohl None
+        return
+    endif
+    call s:InsertCite(l:res.cite_key)
+    echo 'Writer: \cite{' . l:res.cite_key . '}'
+endfunction
+
+" Test hook: exercise cite insertion without the network round-trip
+function! writer#TestInsertCite(key) abort
+    call s:InsertCite(a:key)
+endfunction
+
+" :WriterBib  - report which .bib this buffer is wired to
+function! writer#ShowBib() abort
+    let l:bib = s:BibFile()
+    if empty(l:bib)
+        echo 'Writer: no bibliography found for this document'
+    else
+        echo 'Writer: bibliography is ' . l:bib
+    endif
+endfunction
+
+" ----------------------------------------------------------------------------
+" Completion for \cite{ - local .bib only, no network
+" ----------------------------------------------------------------------------
+
+let s:bib_cache = {'path': '', 'mtime': 0, 'entries': []}
+
+function! s:BibEntries() abort
+    let l:bib = s:BibFile()
+    if empty(l:bib) || !filereadable(l:bib)
+        return []
+    endif
+    let l:mtime = getftime(l:bib)
+    if s:bib_cache.path ==# l:bib && s:bib_cache.mtime == l:mtime
+        return s:bib_cache.entries
+    endif
+    let l:res = s:CiteRun('keys --bib ' . shellescape(l:bib))
+    let s:bib_cache = {'path': l:bib, 'mtime': l:mtime, 'entries': get(l:res, 'entries', [])}
+    return s:bib_cache.entries
+endfunction
+
+" omnifunc: completes cite keys when the cursor is inside \cite{...}
+function! writer#CiteComplete(findstart, base) abort
+    if a:findstart
+        let l:line = getline('.')
+        let l:start = col('.') - 1
+        while l:start > 0 && l:line[l:start - 1] =~# '[A-Za-z0-9_:.\-]'
+            let l:start -= 1
+        endwhile
+        " Only complete inside a \cite-like command
+        let l:before = strpart(l:line, 0, l:start)
+        if l:before !~# '\\\a*cite\a*\%(\[[^]]*\]\)*{[^}]*$'
+            return -3
+        endif
+        return l:start
+    endif
+
+    let l:matches = []
+    for l:entry in s:BibEntries()
+        if empty(a:base) || l:entry.key =~? '^' . escape(a:base, '\\.*$^~[]')
+                    \ || l:entry.author =~? escape(a:base, '\\.*$^~[]')
+                    \ || l:entry.title =~? escape(a:base, '\\.*$^~[]')
+            call add(l:matches, {
+                        \ 'word': l:entry.key,
+                        \ 'menu': l:entry.year . ' ' . l:entry.author,
+                        \ 'info': l:entry.title,
+                        \ })
+        endif
+    endfor
+    return l:matches
+endfunction
+
+function! writer#SetupCiteCompletion() abort
+    if &omnifunc ==# '' || &omnifunc ==# 'writer#CiteComplete'
+        setlocal omnifunc=writer#CiteComplete
+    endif
+endfunction
+
+augroup writer_cite
+    autocmd!
+    autocmd FileType tex,plaintex,markdown,pandoc call writer#SetupCiteCompletion()
+augroup END
+
+" ============================================================================
 " Keybindings
 " ============================================================================
 
@@ -467,6 +720,9 @@ nnoremap <silent> <Leader>wf :call writer#FillSection()<CR>
 
 " Review
 nnoremap <silent> <Leader>wr :call writer#RequestReview()<CR>
+
+" Citations
+nnoremap <silent> <Leader>wb :call writer#Cite('')<CR>
 
 " Toggle
 nnoremap <silent> <Leader>wt :call writer#Toggle()<CR>
@@ -513,6 +769,9 @@ command! WriterAccept call <SID>AcceptPreview()
 command! WriterClear call <SID>ClearPreview()
 command! -nargs=1 -complete=customlist,<SID>ModelComplete WriterModel call writer#SetModel(<q-args>)
 command! WriterModelShow echo "Writer: Current model is " . writer#GetModel()
+command! -nargs=* WriterCite call writer#Cite(<q-args>)
+command! -nargs=1 WriterCiteDoi call writer#CiteDoi(<q-args>)
+command! WriterBib call writer#ShowBib()
 
 " Set updatetime for responsive CursorHold
 if &updatetime > 1000

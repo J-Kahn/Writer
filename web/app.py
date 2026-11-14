@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 from config import load_config
 from ai_client import create_provider, WritingContext, extract_paragraphs, ChatMessage
 from document_parser import parse_markdown, parse_latex, get_current_section
+import citations
 
 app = Flask(__name__, static_folder="static")
 
@@ -69,6 +70,179 @@ def get_document_writing_style(filepath):
     return None
 
 
+# --- Repository registry ---
+#
+# Repos are directories that live outside documents_dir (an existing local
+# checkout, or one cloned from a remote) and are exposed inside it through a
+# symlink. The registry records where each one really points so safe_path can
+# allow it, and survives restarts.
+
+_repos_lock = threading.Lock()
+_repos_file = Path.home() / ".writer" / "repos.json"
+
+
+def _load_repos():
+    """Load the repo registry: {name: {path, source, auto_commit, url}}."""
+    with _repos_lock:
+        if _repos_file.exists():
+            try:
+                data = json.loads(_repos_file.read_text())
+                if isinstance(data, dict):
+                    return data
+            except (json.JSONDecodeError, IOError):
+                pass
+        return {}
+
+
+def _save_repos(data):
+    with _repos_lock:
+        _repos_file.parent.mkdir(parents=True, exist_ok=True)
+        _repos_file.write_text(json.dumps(data, indent=2))
+
+
+def _repo_roots():
+    """Real paths of registered repos, for safe_path containment checks."""
+    roots = []
+    for entry in _load_repos().values():
+        path = entry.get("path")
+        if path:
+            roots.append(Path(os.path.realpath(path)))
+    return roots
+
+
+def _sanitize_repo_name(name):
+    """Reduce a name to a single safe directory component, or None."""
+    name = (name or "").strip().strip("/")
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    if name.startswith("."):
+        return None
+    if not all(c.isalnum() or c in "._- " for c in name):
+        return None
+    return name
+
+
+def _bad_remote_url(url):
+    """Reject a URL git would parse as an option."""
+    return url.startswith("-")
+
+
+def _repo_name_from_url(url):
+    """Derive a directory name from a clone URL."""
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    if ":" in tail and "/" not in url.rstrip("/"):
+        tail = tail.rsplit(":", 1)[-1]
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    return _sanitize_repo_name(tail)
+
+
+def _link_repo(source, name=None, auto_commit=False):
+    """Symlink an existing local directory into documents_dir and register it.
+
+    Returns (name, None) on success or (None, error_message).
+    """
+    src = Path(str(source).strip()).expanduser()
+    if not src.is_absolute():
+        src = (documents_dir / src)
+    try:
+        src_real = src.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None, f"No such directory: {source}"
+    if not src_real.is_dir():
+        return None, f"Not a directory: {source}"
+    if src_real == documents_dir or documents_dir in src_real.parents:
+        return None, "That directory is already inside the documents directory"
+
+    name = _sanitize_repo_name(name or src_real.name)
+    if not name:
+        return None, "Invalid repository name"
+
+    link = documents_dir / name
+    if link.is_symlink():
+        if Path(os.path.realpath(link)) != src_real:
+            return None, f"'{name}' already exists here - choose another name"
+    elif link.exists():
+        return None, f"'{name}' already exists here - choose another name"
+    else:
+        try:
+            link.symlink_to(src_real, target_is_directory=True)
+        except OSError as e:
+            return None, f"Could not link: {e}"
+
+    repos = _load_repos()
+    entry = repos.get(name, {})
+    entry.update({
+        "path": str(src_real),
+        "source": entry.get("source", "link"),
+        "auto_commit": bool(auto_commit),
+    })
+    repos[name] = entry
+    _save_repos(repos)
+    return name, None
+
+
+def _sync_registered_repos():
+    """Recreate missing symlinks at startup and link repos listed in config."""
+    repos = _load_repos()
+    changed = False
+    for name, entry in list(repos.items()):
+        path = entry.get("path", "")
+        if entry.get("source") == "clone":
+            continue
+        link = documents_dir / name
+        if link.exists() or link.is_symlink():
+            continue
+        if not Path(path).is_dir():
+            print(f"Warning: linked repo '{name}' is missing at {path}")
+            continue
+        try:
+            link.symlink_to(Path(path), target_is_directory=True)
+            changed = True
+        except OSError as e:
+            print(f"Warning: could not relink repo '{name}': {e}")
+    if changed:
+        _save_repos(repos)
+
+    for path in (writer_config.web.repos or []):
+        name, err = _link_repo(path)
+        if err and "already exists" not in err:
+            print(f"Warning: could not link repo {path}: {err}")
+
+
+def _repo_status(name, entry):
+    """Describe one registered repo for the API."""
+    path = entry.get("path", "")
+    link = documents_dir / name
+    info = {
+        "name": name,
+        "path": path,
+        "source": entry.get("source", "link"),
+        "auto_commit": bool(entry.get("auto_commit", True)),
+        "exists": Path(path).is_dir(),
+        "linked": link.exists() or link.is_symlink(),
+        "is_git": (link / ".git").is_dir(),
+        "branch": "",
+        "remote": "",
+    }
+    if info["is_git"]:
+        ok_b, branch = _git_run(link, "symbolic-ref", "--short", "HEAD")
+        ok_r, remote = _git_run(link, "remote", "get-url", "origin")
+        info["branch"] = branch if ok_b else ""
+        info["remote"] = remote if ok_r else ""
+    return info
+
+
+def _auto_commit_enabled(git_root):
+    """Auto-commit on save, unless a registered repo opted out."""
+    real = Path(os.path.realpath(git_root))
+    for entry in _load_repos().values():
+        path = entry.get("path")
+        if path and Path(os.path.realpath(path)) == real:
+            return bool(entry.get("auto_commit", True))
+    return True
+
+
 def _load_secret_key():
     """Load or generate a persistent secret key."""
     key_file = Path.home() / ".writer" / "secret_key"
@@ -89,6 +263,7 @@ def create_app():
     ai_provider = create_provider(writer_config)
     documents_dir = Path(writer_config.web.documents_dir).expanduser().resolve()
     documents_dir.mkdir(parents=True, exist_ok=True)
+    _sync_registered_repos()
 
     app.config["SECRET_KEY"] = _load_secret_key()
     app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -124,11 +299,34 @@ def login_required(f):
 
 
 def safe_path(requested_path):
-    """Resolve path safely within documents_dir."""
-    resolved = (documents_dir / requested_path).resolve()
-    if not str(resolved).startswith(str(documents_dir)):
+    """Resolve a request path under documents_dir.
+
+    The path is normalized lexically, so ".." can never escape. The real target
+    must then live inside documents_dir or inside a registered repository -
+    that is what lets a linked repo be reached through its symlink here.
+    """
+    if requested_path is None:
         return None
-    return resolved
+    raw = str(requested_path).replace("\\", "/")
+    if raw.startswith("/"):
+        return None
+    parts = []
+    for part in raw.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+            continue
+        parts.append(part)
+
+    candidate = documents_dir.joinpath(*parts)
+    real = Path(os.path.realpath(candidate))
+    for root in [documents_dir] + _repo_roots():
+        if real == root or root in real.parents:
+            return candidate
+    return None
 
 
 # --- HTTP Routes ---
@@ -210,9 +408,9 @@ def save_file(filepath):
     content = data.get("content", "")
     fpath.write_text(content)
 
-    # Auto-commit if file is inside a git repo
+    # Auto-commit if file is inside a git repo that wants it
     git_root = _find_git_root(fpath)
-    if git_root:
+    if git_root and _auto_commit_enabled(git_root):
         _git_auto_commit(git_root, fpath)
 
     return jsonify({"status": "ok", "path": filepath})
@@ -280,6 +478,19 @@ def _find_git_root(fpath):
     return None
 
 
+def _git_env():
+    """Git environment that fails fast instead of prompting for credentials.
+
+    The server has no terminal, so an unauthenticated fetch would otherwise
+    block until the request times out.
+    """
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    env["GIT_ASKPASS"] = "echo"
+    return env
+
+
 def _git_run(git_root, *args, timeout=10):
     """Run a git command and return (success, stdout)."""
     try:
@@ -287,10 +498,29 @@ def _git_run(git_root, *args, timeout=10):
             ["git"] + list(args),
             cwd=str(git_root),
             capture_output=True, text=True, timeout=timeout,
+            env=_git_env(),
         )
         return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
+    except subprocess.TimeoutExpired:
+        return False, f"git {args[0] if args else ''} timed out after {timeout}s"
     except Exception as e:
         return False, str(e)
+
+
+def _auth_hint(output):
+    """Add a hint when a remote operation failed for credential reasons."""
+    lowered = (output or "").lower()
+    markers = (
+        "permission denied", "authentication failed", "could not read username",
+        "host key verification failed", "terminal prompts disabled",
+        "please make sure you have the correct access rights",
+    )
+    if any(m in lowered for m in markers):
+        return (output + "\n\nThe server could not authenticate to the remote. "
+                "Add a deploy key for this repo to the server account "
+                "(~/.ssh/id_ed25519 for git@github.com URLs), or use an https URL "
+                "with a token in a credential helper.")
+    return output
 
 
 def _git_auto_commit(git_root, fpath):
@@ -456,10 +686,10 @@ def git_push():
     ok_b, branch = _git_run(git_root, "symbolic-ref", "--short", "HEAD")
     branch = branch if ok_b else "main"
 
-    ok, out = _git_run(git_root, "push", "-u", "origin", branch, timeout=30)
+    ok, out = _git_run(git_root, "push", "-u", "origin", branch, timeout=180)
     if ok:
         return jsonify({"status": "ok", "message": out or "Pushed successfully"})
-    return jsonify({"error": out}), 400
+    return jsonify({"error": _auth_hint(out)}), 400
 
 
 @app.route("/api/git/pull", methods=["POST"])
@@ -476,10 +706,303 @@ def git_pull():
     if not git_root:
         return jsonify({"error": "Not a git repository"}), 400
 
-    ok, out = _git_run(git_root, "pull", "--ff-only", "origin", timeout=30)
+    ok, out = _git_run(git_root, "pull", "--ff-only", "origin", timeout=180)
     if ok:
         return jsonify({"status": "ok", "message": out or "Pulled successfully"})
-    return jsonify({"error": out}), 400
+    return jsonify({"error": _auth_hint(out)}), 400
+
+
+# --- Repository API routes ---
+
+@app.route("/api/repos", methods=["GET"])
+@login_required
+def repos_list():
+    """List registered repositories."""
+    repos = _load_repos()
+    return jsonify({
+        "repos": [_repo_status(n, repos[n]) for n in sorted(repos)],
+        "documents_dir": str(documents_dir),
+    })
+
+
+@app.route("/api/repos/link", methods=["POST"])
+@login_required
+def repos_link():
+    """Expose an existing local directory (e.g. ~/Projects/SRP) inside Writer."""
+    data = request.get_json() or {}
+    source = (data.get("path") or "").strip()
+    if not source:
+        return jsonify({"error": "Path required"}), 400
+
+    name, err = _link_repo(
+        source,
+        data.get("name"),
+        auto_commit=bool(data.get("auto_commit", False)),
+    )
+    if err:
+        return jsonify({"error": err}), 400
+
+    repos = _load_repos()
+    return jsonify({"status": "ok", "repo": _repo_status(name, repos[name])})
+
+
+@app.route("/api/repos/clone", methods=["POST"])
+@login_required
+def repos_clone():
+    """Clone a remote repository into the documents directory."""
+    data = request.get_json() or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "URL required"}), 400
+    if _bad_remote_url(url):
+        return jsonify({"error": "Invalid URL"}), 400
+
+    requested = (data.get("name") or "").strip()
+    if requested:
+        name = _sanitize_repo_name(requested)
+        if not name:
+            return jsonify({"error": "Invalid repository name"}), 400
+    else:
+        name = _repo_name_from_url(url)
+        if not name:
+            return jsonify({"error": "Could not determine a name for the clone"}), 400
+
+    dest = documents_dir / name
+    if dest.exists() or dest.is_symlink():
+        return jsonify({"error": f"'{name}' already exists here - choose another name"}), 400
+
+    args = ["clone"]
+    branch = (data.get("branch") or "").strip()
+    if branch:
+        args += ["--branch", branch]
+    depth = data.get("depth")
+    if depth:
+        try:
+            depth = int(depth)
+        except (TypeError, ValueError):
+            return jsonify({"error": "depth must be a number"}), 400
+        if depth > 0:
+            # Shallow keeps a history-heavy repo cheap to put on the server.
+            # --depth implies --single-branch, so allow opting back out.
+            args += ["--depth", str(depth)]
+            if data.get("all_branches"):
+                args.append("--no-single-branch")
+    args += [url, name]
+
+    ok, out = _git_run(documents_dir, *args, timeout=1800)
+    if not ok:
+        return jsonify({"error": _auth_hint(out) or "Clone failed"}), 400
+
+    repos = _load_repos()
+    repos[name] = {
+        "path": str(dest.resolve()),
+        "source": "clone",
+        "url": url,
+        "auto_commit": bool(data.get("auto_commit", True)),
+    }
+    _save_repos(repos)
+    return jsonify({"status": "ok", "repo": _repo_status(name, repos[name])})
+
+
+@app.route("/api/repos/<name>", methods=["POST"])
+@login_required
+def repos_update(name):
+    """Update repo settings (currently: auto_commit)."""
+    repos = _load_repos()
+    if name not in repos:
+        return jsonify({"error": "Unknown repository"}), 404
+
+    data = request.get_json() or {}
+    if "auto_commit" in data:
+        repos[name]["auto_commit"] = bool(data["auto_commit"])
+    _save_repos(repos)
+    return jsonify({"status": "ok", "repo": _repo_status(name, repos[name])})
+
+
+@app.route("/api/repos/<name>", methods=["DELETE"])
+@login_required
+def repos_unlink(name):
+    """Unregister a repo. Only the symlink is removed - never the repo itself."""
+    repos = _load_repos()
+    if name not in repos:
+        return jsonify({"error": "Unknown repository"}), 404
+
+    entry = repos.pop(name)
+    _save_repos(repos)
+
+    link = documents_dir / name
+    if link.is_symlink():
+        try:
+            link.unlink()
+        except OSError as e:
+            return jsonify({"error": f"Unregistered, but could not remove link: {e}"}), 500
+        return jsonify({"status": "ok", "message": f"Unlinked {name} (files untouched)"})
+
+    return jsonify({
+        "status": "ok",
+        "message": f"Unregistered {name}. Its files remain at {entry.get('path', '')}",
+    })
+
+
+@app.route("/api/git/check-remote", methods=["POST"])
+@login_required
+def git_check_remote():
+    """Test that the server can reach a remote, and list its branches.
+
+    Worth calling before a clone: it verifies the server's credentials without
+    downloading anything.
+    """
+    data = request.get_json() or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "URL required"}), 400
+    if _bad_remote_url(url):
+        return jsonify({"error": "Invalid URL"}), 400
+
+    ok, out = _git_run(documents_dir, "ls-remote", "--heads", url, timeout=60)
+    if not ok:
+        return jsonify({"error": _auth_hint(out) or "Could not reach remote"}), 400
+
+    branches = []
+    for line in (out or "").split("\n"):
+        if "refs/heads/" in line:
+            branches.append(line.split("refs/heads/", 1)[1].strip())
+
+    return jsonify({
+        "status": "ok",
+        "url": url,
+        "name": _repo_name_from_url(url) or "",
+        "branches": sorted(branches),
+    })
+
+
+@app.route("/api/git/fetch", methods=["POST"])
+@login_required
+def git_fetch():
+    """Fetch from origin so status can report what is waiting to be pulled."""
+    data = request.get_json() or {}
+    subdir = data.get("dir", "")
+    target = safe_path(subdir) if subdir else documents_dir
+    if target is None:
+        return jsonify({"error": "Invalid directory"}), 400
+
+    git_root = _find_git_root(target)
+    if not git_root:
+        return jsonify({"error": "Not a git repository"}), 400
+
+    ok, out = _git_run(git_root, "fetch", "--prune", "origin", timeout=300)
+    if ok:
+        return jsonify({"status": "ok", "message": out or "Fetched"})
+    return jsonify({"error": _auth_hint(out)}), 400
+
+
+@app.route("/api/git/branches", methods=["GET"])
+@login_required
+def git_branches():
+    """List local and remote branches for a repository."""
+    subdir = request.args.get("dir", "")
+    target = safe_path(subdir) if subdir else documents_dir
+    if target is None or not target.is_dir():
+        return jsonify({"is_repo": False})
+
+    git_root = _find_git_root(target)
+    if not git_root:
+        return jsonify({"is_repo": False})
+
+    ok_c, current = _git_run(git_root, "symbolic-ref", "--short", "HEAD")
+    ok_l, local_out = _git_run(git_root, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    ok_r, remote_out = _git_run(
+        git_root, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"
+    )
+
+    local = [b for b in (local_out or "").split("\n") if b] if ok_l else []
+    remote = []
+    if ok_r:
+        for ref in (remote_out or "").split("\n"):
+            name = ref.replace("origin/", "", 1).strip()
+            if name and name != "HEAD" and name not in local:
+                remote.append(name)
+
+    return jsonify({
+        "is_repo": True,
+        "current": current if ok_c else "",
+        "local": local,
+        "remote": sorted(remote),
+    })
+
+
+@app.route("/api/git/checkout", methods=["POST"])
+@login_required
+def git_checkout():
+    """Switch branches, optionally creating one from the current HEAD."""
+    data = request.get_json() or {}
+    subdir = data.get("dir", "")
+    branch = (data.get("branch") or "").strip()
+    if not branch:
+        return jsonify({"error": "Branch required"}), 400
+
+    target = safe_path(subdir) if subdir else documents_dir
+    if target is None:
+        return jsonify({"error": "Invalid directory"}), 400
+
+    git_root = _find_git_root(target)
+    if not git_root:
+        return jsonify({"error": "Not a git repository"}), 400
+
+    if data.get("create"):
+        ok, out = _git_run(git_root, "checkout", "-b", branch, timeout=60)
+    else:
+        ok, out = _git_run(git_root, "checkout", branch, timeout=60)
+        if not ok and "did not match any file" in (out or ""):
+            # Not fetched yet - try again after refreshing refs from origin.
+            _git_run(git_root, "fetch", "origin", branch, timeout=300)
+            ok, out = _git_run(git_root, "checkout", branch, timeout=60)
+
+    if ok:
+        return jsonify({"status": "ok", "branch": branch, "message": out})
+    return jsonify({"error": out or "Checkout failed"}), 400
+
+
+@app.route("/api/git/status", methods=["GET"])
+@login_required
+def git_status():
+    """Working-tree status for a directory: branch, ahead/behind, changed files."""
+    subdir = request.args.get("dir", "")
+    target = safe_path(subdir) if subdir else documents_dir
+    if target is None or not target.is_dir():
+        return jsonify({"is_repo": False})
+
+    git_root = _find_git_root(target)
+    if not git_root:
+        return jsonify({"is_repo": False})
+
+    ok_b, branch = _git_run(git_root, "symbolic-ref", "--short", "HEAD")
+    ok, out = _git_run(git_root, "status", "--porcelain=v1", "--branch")
+
+    files, ahead, behind = [], 0, 0
+    if ok and out:
+        for line in out.split("\n"):
+            if line.startswith("##"):
+                for marker, key in (("ahead ", "ahead"), ("behind ", "behind")):
+                    if marker in line:
+                        num = line.split(marker, 1)[1].split("]")[0].split(",")[0].strip()
+                        if num.isdigit():
+                            if key == "ahead":
+                                ahead = int(num)
+                            else:
+                                behind = int(num)
+                continue
+            if len(line) > 3:
+                files.append({"status": line[:2].strip(), "path": line[3:].strip()})
+
+    return jsonify({
+        "is_repo": True,
+        "branch": branch if ok_b else "",
+        "ahead": ahead,
+        "behind": behind,
+        "dirty": len(files) > 0,
+        "files": files[:200],
+    })
 
 
 # --- LaTeX Compilation ---
@@ -576,15 +1099,9 @@ def latex_pdf(filepath):
 
 
 # --- CrossRef BibTeX Lookup ---
-
-def _crossref_get(url):
-    """Make a GET request to CrossRef API."""
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "Writer/1.0 (mailto:writer@writer.local)",
-    })
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode())
-
+#
+# The lookup and BibTeX handling live in python/citations.py so the vim plugin
+# (via cite_cli.py) runs exactly the same code. These routes are thin wrappers.
 
 @app.route("/api/crossref/search", methods=["GET"])
 @login_required
@@ -594,54 +1111,30 @@ def crossref_search():
     title = request.args.get("title", "").strip()
     rows = min(int(request.args.get("rows", "10")), 20)
 
-    if not author and not title:
-        return jsonify({"error": "Provide author and/or title"}), 400
-
-    params = {"rows": str(rows), "sort": "relevance"}
-    if author and title:
-        params["query.author"] = author
-        params["query.bibliographic"] = title
-    elif author:
-        params["query.author"] = author
-    else:
-        params["query.bibliographic"] = title
-
-    url = "https://api.crossref.org/works?" + urllib.parse.urlencode(params)
     try:
-        data = _crossref_get(url)
+        results = citations.crossref_search(author, title, rows)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 
-    results = []
-    for item in data.get("message", {}).get("items", []):
-        authors = []
-        for a in item.get("author", []):
-            name = a.get("family", "")
-            if a.get("given"):
-                name = a["given"] + " " + name
-            authors.append(name)
+    return jsonify({"results": results})
 
-        title_parts = item.get("title", [])
-        year = ""
-        for date_field in ("published-print", "published-online", "issued"):
-            parts = item.get(date_field, {}).get("date-parts", [[]])
-            if parts and parts[0] and parts[0][0]:
-                year = str(parts[0][0])
-                break
 
-        journal = ""
-        for ct in item.get("container-title", []):
-            journal = ct
-            break
+@app.route("/api/openalex/search", methods=["GET"])
+@login_required
+def openalex_search():
+    """Fallback search via OpenAlex when CrossRef returns no results."""
+    author = request.args.get("author", "").strip()
+    title = request.args.get("title", "").strip()
+    rows = min(int(request.args.get("rows", "10")), 20)
 
-        results.append({
-            "doi": item.get("DOI", ""),
-            "title": title_parts[0] if title_parts else "(no title)",
-            "authors": authors,
-            "year": year,
-            "journal": journal,
-            "type": item.get("type", ""),
-        })
+    try:
+        results = citations.openalex_search(author, title, rows)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
 
     return jsonify({"results": results})
 
@@ -650,140 +1143,20 @@ def crossref_search():
 @login_required
 def crossref_bibtex(doi):
     """Fetch BibTeX for a DOI from CrossRef."""
-    url = "https://api.crossref.org/works/" + urllib.parse.quote(doi, safe="/")
-    req = urllib.request.Request(url + "/transform/application/x-bibtex", headers={
-        "User-Agent": "Writer/1.0 (mailto:writer@writer.local)",
-    })
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            bibtex = resp.read().decode()
-        bibtex = _reformat_bibtex_key(bibtex)
-        bibtex = _format_bibtex(bibtex)
-        return jsonify({"bibtex": bibtex})
+        return jsonify({"bibtex": citations.bibtex_for_doi(doi)})
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 
 
-import re as _re
-
-# Preferred field order for formatted BibTeX
-_BIBTEX_FIELD_ORDER = [
-    "author", "title", "journal", "volume", "number", "pages",
-    "year", "month", "publisher", "doi", "issn", "url",
-]
-
-
-def _reformat_bibtex_key(bibtex):
-    """Rewrite cite key from Author_Year to AuthorYear format."""
-    authors = _re.findall(r'author\s*=\s*\{([^}]+)\}', bibtex, _re.IGNORECASE)
-    years = _re.findall(r'year\s*=\s*\{?(\d{4})\}?', bibtex, _re.IGNORECASE)
-
-    if authors and years:
-        surnames = []
-        for part in _re.split(r'\s+and\s+', authors[0]):
-            part = part.strip()
-            if ',' in part:
-                surnames.append(part.split(',')[0].strip())
-            else:
-                words = part.split()
-                if words:
-                    surnames.append(words[-1].strip())
-        clean = [_re.sub(r'[^A-Za-z]', '', s).capitalize() for s in surnames]
-        new_key = ''.join(clean) + years[0]
-        bibtex = _re.sub(r'(@\w+\s*\{)\s*[^,]+,', r'\g<1>' + new_key + ',', bibtex, count=1)
-
-    return bibtex
-
-
-def _format_bibtex(bibtex):
-    """Pretty-print BibTeX with consistent indentation and field ordering."""
-    # Extract entry type and key
-    m = _re.match(r'(@\w+)\s*\{\s*([^,]+),\s*', bibtex)
-    if not m:
-        return bibtex
-    entry_type = m.group(1).lower()
-    key = m.group(2).strip()
-
-    # Extract fields: handle nested braces
-    fields = {}
-    # Find all field = value pairs
-    for fm in _re.finditer(r'(\w+)\s*=\s*', bibtex[m.end():]):
-        fname = fm.group(1).lower()
-        rest = bibtex[m.end() + fm.end():]
-        # Parse value (braced or bare)
-        val = ""
-        if rest.startswith('{'):
-            depth = 0
-            for i, c in enumerate(rest):
-                if c == '{':
-                    depth += 1
-                elif c == '}':
-                    depth -= 1
-                    if depth == 0:
-                        val = rest[1:i]
-                        break
-        else:
-            # Bare value (e.g. month = oct)
-            em = _re.match(r'([^,}\s]+)', rest)
-            if em:
-                val = em.group(1)
-        if val or fname not in fields:
-            fields[fname] = val
-
-    # Build output with ordered fields
-    lines = [f"{entry_type}{{{key},"]
-    seen = set()
-    for f in _BIBTEX_FIELD_ORDER:
-        if f in fields:
-            lines.append(f"  {f} = {{{fields[f]}}},")
-            seen.add(f)
-    for f in sorted(fields):
-        if f not in seen:
-            lines.append(f"  {f} = {{{fields[f]}}},")
-    lines.append("}")
-    return "\n".join(lines)
-
-
-def _extract_bibtex_keys_and_dois(text):
-    """Extract all cite keys and DOIs from a .bib file's text."""
-    keys = set(_re.findall(r'@\w+\s*\{\s*([^,]+),', text))
-    dois = set()
-    for m in _re.finditer(r'doi\s*=\s*\{([^}]+)\}', text, _re.IGNORECASE):
-        dois.add(m.group(1).strip().lower())
-    return keys, dois
-
-
-def _get_bibtex_key(bibtex):
-    """Extract the cite key from a BibTeX entry."""
-    m = _re.match(r'@\w+\s*\{\s*([^,]+),', bibtex)
-    return m.group(1).strip() if m else ""
-
-
-def _get_bibtex_doi(bibtex):
-    """Extract the DOI from a BibTeX entry."""
-    m = _re.search(r'doi\s*=\s*\{([^}]+)\}', bibtex, _re.IGNORECASE)
-    return m.group(1).strip().lower() if m else ""
-
-
-def _set_bibtex_key(bibtex, new_key):
-    """Replace the cite key in a BibTeX entry."""
-    return _re.sub(r'(@\w+\s*\{)\s*[^,]+,', r'\g<1>' + new_key + ',', bibtex, count=1)
-
-
-def _deduplicate_key(key, existing_keys):
-    """Add a/b/c suffix if key already exists. E.g. BarthKahn2025 -> BarthKahn2025b."""
-    if key not in existing_keys:
-        return key
-    # Check if the base key (without trailing letter) is what collides
-    # Strip any existing suffix letter first
-    base = _re.sub(r'[a-z]$', '', key)
-    # If the bare key exists, it becomes 'a' conceptually; new one gets 'b', 'c', ...
-    for suffix in 'bcdefghijklmnopqrstuvwxyz':
-        candidate = base + suffix
-        if candidate not in existing_keys:
-            return candidate
-    # Extreme fallback
-    return key + '_2'
+@app.route("/api/crossref/doi/<path:doi>", methods=["GET"])
+@login_required
+def crossref_doi_lookup(doi):
+    """Look up a single DOI and return formatted BibTeX."""
+    try:
+        return jsonify({"bibtex": citations.bibtex_for_doi(doi)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
 
 
 @app.route("/api/crossref/add", methods=["POST"])
@@ -800,34 +1173,15 @@ def crossref_add_to_bib():
     if fpath is None:
         return jsonify({"error": "Invalid path"}), 400
 
-    fpath.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        cite_key = citations.add_to_bib(fpath, bibtex)
+    except citations.DuplicateEntry as e:
+        return jsonify({"error": str(e)}), 409
 
-    existing = ""
-    if fpath.exists():
-        existing = fpath.read_text()
-
-    # Check DOI duplicate (hard duplicate — same paper)
-    if existing.strip():
-        existing_keys, existing_dois = _extract_bibtex_keys_and_dois(existing)
-        new_doi = _get_bibtex_doi(bibtex)
-        if new_doi and new_doi in existing_dois:
-            return jsonify({"error": f"Duplicate: DOI '{new_doi}' already exists"}), 409
-
-        # Deduplicate key (soft collision — different paper, same authors+year)
-        new_key = _get_bibtex_key(bibtex)
-        if new_key and new_key in existing_keys:
-            deduped = _deduplicate_key(new_key, existing_keys)
-            bibtex = _set_bibtex_key(bibtex, deduped)
-
-    separator = "\n\n" if existing.strip() else ""
-    fpath.write_text(existing + separator + bibtex + "\n")
-
-    # Auto-commit if in a git repo
     git_root = _find_git_root(fpath)
     if git_root:
         _git_auto_commit(git_root, fpath)
 
-    cite_key = _get_bibtex_key(bibtex)
     return jsonify({"status": "ok", "path": bib_path, "cite_key": cite_key})
 
 
@@ -838,40 +1192,7 @@ def crossref_list_bib(bib_path):
     fpath = safe_path(bib_path)
     if fpath is None:
         return jsonify({"error": "Invalid path"}), 400
-    if not fpath.exists():
-        return jsonify({"entries": []})
-
-    text = fpath.read_text()
-    entries = []
-    for m in _re.finditer(r'(@\w+)\s*\{\s*([^,]+),', text):
-        entry_type = m.group(1)
-        key = m.group(2).strip()
-        # Extract title and author from the entry block
-        block_start = m.start()
-        # Find the end of this entry (matching closing brace)
-        depth = 0
-        block_end = block_start
-        for i in range(m.end(), len(text)):
-            if text[i] == '{':
-                depth += 1
-            elif text[i] == '}':
-                if depth == 0:
-                    block_end = i + 1
-                    break
-                depth -= 1
-        block = text[block_start:block_end]
-        title_m = _re.search(r'title\s*=\s*\{([^}]+)\}', block, _re.IGNORECASE)
-        author_m = _re.search(r'author\s*=\s*\{([^}]+)\}', block, _re.IGNORECASE)
-        year_m = _re.search(r'year\s*=\s*\{?(\d{4})\}?', block, _re.IGNORECASE)
-        entries.append({
-            "key": key,
-            "type": entry_type,
-            "title": title_m.group(1) if title_m else "",
-            "author": author_m.group(1) if author_m else "",
-            "year": year_m.group(1) if year_m else "",
-        })
-
-    return jsonify({"entries": entries})
+    return jsonify({"entries": citations.list_bib(fpath)})
 
 
 @app.route("/api/crossref/bib/<path:bib_path>", methods=["DELETE"])
@@ -886,119 +1207,14 @@ def crossref_delete_bib_entry(bib_path):
     if not key:
         return jsonify({"error": "key parameter required"}), 400
 
-    text = fpath.read_text()
-    # Find and remove the entry
-    pattern = r'\n*@\w+\s*\{\s*' + _re.escape(key) + r'\s*,'
-    m = _re.search(pattern, text)
-    if not m:
+    if not citations.delete_entry(fpath, key):
         return jsonify({"error": f"Key '{key}' not found"}), 404
-
-    # Find matching closing brace
-    depth = 0
-    start = m.start()
-    end = start
-    found_open = False
-    for i in range(m.start(), len(text)):
-        if text[i] == '{':
-            depth += 1
-            found_open = True
-        elif text[i] == '}':
-            depth -= 1
-            if found_open and depth == 0:
-                end = i + 1
-                break
-
-    new_text = text[:start] + text[end:]
-    # Clean up multiple blank lines
-    new_text = _re.sub(r'\n{3,}', '\n\n', new_text).strip() + "\n" if new_text.strip() else ""
-    fpath.write_text(new_text)
 
     git_root = _find_git_root(fpath)
     if git_root:
         _git_auto_commit(git_root, fpath)
 
     return jsonify({"status": "ok"})
-
-
-@app.route("/api/crossref/doi/<path:doi>", methods=["GET"])
-@login_required
-def crossref_doi_lookup(doi):
-    """Look up a single DOI and return formatted BibTeX."""
-    url = "https://api.crossref.org/works/" + urllib.parse.quote(doi, safe="/")
-    req = urllib.request.Request(url + "/transform/application/x-bibtex", headers={
-        "User-Agent": "Writer/1.0 (mailto:writer@writer.local)",
-    })
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            bibtex = resp.read().decode()
-        bibtex = _reformat_bibtex_key(bibtex)
-        bibtex = _format_bibtex(bibtex)
-        return jsonify({"bibtex": bibtex})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
-
-
-@app.route("/api/openalex/search", methods=["GET"])
-@login_required
-def openalex_search():
-    """Fallback search via OpenAlex when CrossRef returns no results."""
-    author = request.args.get("author", "").strip()
-    title = request.args.get("title", "").strip()
-    rows = min(int(request.args.get("rows", "10")), 20)
-
-    if not author and not title:
-        return jsonify({"error": "Provide author or title"}), 400
-
-    # Build OpenAlex search URL
-    search_parts = []
-    if title:
-        search_parts.append(title)
-    if author:
-        search_parts.append(author)
-    search_query = " ".join(search_parts)
-
-    params = {
-        "search": search_query,
-        "per_page": str(rows),
-        "mailto": "writer@writer.local",
-    }
-    if author and not title:
-        params = {
-            "filter": "authorships.author.display_name.search:" + author,
-            "per_page": str(rows),
-            "mailto": "writer@writer.local",
-        }
-
-    url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
-
-    results = []
-    for item in data.get("results", []):
-        authors = [a.get("author", {}).get("display_name", "")
-                   for a in item.get("authorships", [])]
-        year = str(item.get("publication_year", ""))
-        doi = (item.get("doi") or "").replace("https://doi.org/", "")
-        title_val = item.get("title") or "(no title)"
-        journal = ""
-        loc = item.get("primary_location", {}) or {}
-        src = loc.get("source", {}) or {}
-        journal = src.get("display_name", "")
-
-        results.append({
-            "doi": doi,
-            "title": title_val,
-            "authors": authors,
-            "year": year,
-            "journal": journal,
-            "type": item.get("type", ""),
-        })
-
-    return jsonify({"results": results})
 
 
 # --- WebSocket Events ---

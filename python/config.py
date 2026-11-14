@@ -49,6 +49,12 @@ class WebConfig:
     port: int = 8080
     documents_dir: str = "~/Documents/Writer"
     latex_engine: str = "pdflatex"
+    # Local repositories to expose inside documents_dir (absolute paths)
+    repos: list = None
+
+    def __post_init__(self):
+        if self.repos is None:
+            self.repos = []
 
 
 @dataclass
@@ -123,6 +129,9 @@ def load_config() -> WriterConfig:
         web.port = web_section.getint('port', web.port)
         web.documents_dir = web_section.get('documents_dir', web.documents_dir)
         web.latex_engine = web_section.get('latex_engine', web.latex_engine)
+        # repos: comma- or newline-separated list of local repo paths
+        raw_repos = web_section.get('repos', '')
+        web.repos = [r.strip() for r in raw_repos.replace(',', '\n').split('\n') if r.strip()]
 
     return WriterConfig(ai=ai, display=display, editor=editor, web=web)
 

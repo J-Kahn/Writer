@@ -48,3 +48,10 @@ documents_dir = ~/Documents/Writer
 
 # LaTeX engine: pdflatex, xelatex, or lualatex
 latex_engine = pdflatex
+
+# Local git repositories to expose inside documents_dir, comma-separated. Only
+# useful when the server runs on the same machine as the checkout - each one is
+# symlinked in under its own directory name at startup. Repos added from the web
+# UI (linked or cloned) are remembered separately in ~/.writer/repos.json.
+# Example: repos = ~/Projects/SRP, ~/Projects/Notes
+repos =
