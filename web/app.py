@@ -399,7 +399,7 @@ def get_file(filepath):
 @app.route("/api/files/<path:filepath>", methods=["PUT"])
 @login_required
 def save_file(filepath):
-    """Save/create a file, auto-commit if in a git repo."""
+    """Save/create a file."""
     fpath = safe_path(filepath)
     if fpath is None:
         return jsonify({"error": "Invalid path"}), 400
@@ -407,11 +407,6 @@ def save_file(filepath):
     data = request.get_json()
     content = data.get("content", "")
     fpath.write_text(content)
-
-    # Auto-commit if file is inside a git repo that wants it
-    git_root = _find_git_root(fpath)
-    if git_root and _auto_commit_enabled(git_root):
-        _git_auto_commit(git_root, fpath)
 
     return jsonify({"status": "ok", "path": filepath})
 
@@ -692,10 +687,30 @@ def git_push():
     return jsonify({"error": _auth_hint(out)}), 400
 
 
+@app.route("/api/git/auto-commit", methods=["POST"])
+@login_required
+def git_auto_commit():
+    """Auto-commit all changed files (silent, best-effort)."""
+    data = request.get_json()
+    filepath = data.get("path", "")
+    if not filepath:
+        return jsonify({"status": "ok"})
+
+    fpath = safe_path(filepath)
+    if fpath is None or not fpath.exists():
+        return jsonify({"status": "ok"})
+
+    git_root = _find_git_root(fpath)
+    if git_root and _auto_commit_enabled(git_root):
+        _git_auto_commit(git_root, fpath)
+
+    return jsonify({"status": "ok"})
+
+
 @app.route("/api/git/pull", methods=["POST"])
 @login_required
 def git_pull():
-    """Pull current branch from remote origin."""
+    """Pull current branch from remote origin (fast-forward only)."""
     data = request.get_json()
     subdir = data.get("dir", "")
     target = safe_path(subdir) if subdir else documents_dir
@@ -706,7 +721,10 @@ def git_pull():
     if not git_root:
         return jsonify({"error": "Not a git repository"}), 400
 
-    ok, out = _git_run(git_root, "pull", "--ff-only", "origin", timeout=180)
+    ok_b, branch = _git_run(git_root, "symbolic-ref", "--short", "HEAD")
+    branch = branch if ok_b else "main"
+
+    ok, out = _git_run(git_root, "pull", "--ff-only", "origin", branch, timeout=180)
     if ok:
         return jsonify({"status": "ok", "message": out or "Pulled successfully"})
     return jsonify({"error": _auth_hint(out)}), 400

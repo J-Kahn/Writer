@@ -658,6 +658,7 @@ var inlineCompleteTimeout = null;
 var inlineRequestId = 0;
 var inlineRequestPos = null;
 var lastCompiledPdf = null;
+var autoCommitTimeout = null;
 
 // --- File Type Detection ---
 function getFileType(filepath) {
@@ -790,7 +791,7 @@ function createEditor() {
   var _changingNow = false;
   editor.on('change', function(cm, change) {
     _changingNow = true;
-    if (!suppressSave) scheduleSave();
+    if (!suppressSave) { scheduleSave(); scheduleAutoCommit(); }
     scheduleOutlineUpdate();
     // Clear existing ghost text but don't cancel pending timeout
     if (ghostBookmark) { ghostBookmark.clear(); ghostBookmark = null; }
@@ -852,7 +853,22 @@ function saveFile() {
   });
 }
 
+function scheduleAutoCommit() {
+  clearTimeout(autoCommitTimeout);
+  autoCommitTimeout = setTimeout(doAutoCommit, 5 * 60 * 1000);
+}
+
+function doAutoCommit() {
+  if (!currentFile) return;
+  fetch('/api/git/auto-commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: currentFile }),
+  }).catch(function() {});
+}
+
 function openFile(filepath) {
+  clearTimeout(autoCommitTimeout);
   fetch('/api/files/' + filepath.split('/').map(encodeURIComponent).join('/'))
     .then(function(resp) { return resp.json(); })
     .then(function(data) {
@@ -1832,30 +1848,6 @@ function setGitRemote() {
   });
 }
 
-function gitPull() {
-  var resultEl = document.getElementById('git-result');
-  resultEl.innerHTML = '<span style="color:var(--yellow)">Pulling...</span>';
-  fetch('/api/git/pull', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dir: browseDir }),
-  })
-  .then(function(resp) { return resp.json(); })
-  .then(function(data) {
-    if (data.error) {
-      resultEl.innerHTML = '<span style="color:var(--red)">' + esc(data.error) + '</span>';
-    } else {
-      resultEl.innerHTML = '<span style="color:var(--green)">Pulled!</span>';
-      setTimeout(function() { resultEl.innerHTML = ''; }, 2000);
-      // Reload current file if one is open, in case it changed
-      if (currentFile) { openFile(currentFile); }
-    }
-  })
-  .catch(function(e) {
-    resultEl.innerHTML = '<span style="color:var(--red)">Error: ' + esc(e.message) + '</span>';
-  });
-}
-
 function gitPush() {
   var resultEl = document.getElementById('git-result');
   resultEl.innerHTML = '<span style="color:var(--yellow)">Pushing...</span>';
@@ -1870,6 +1862,31 @@ function gitPush() {
       resultEl.innerHTML = '<span style="color:var(--red)">' + esc(data.error) + '</span>';
     } else {
       resultEl.innerHTML = '<span style="color:var(--green)">Pushed!</span>';
+      setTimeout(function() { resultEl.innerHTML = ''; }, 2000);
+    }
+  })
+  .catch(function(e) {
+    resultEl.innerHTML = '<span style="color:var(--red)">Error: ' + esc(e.message) + '</span>';
+  });
+}
+
+function gitPull() {
+  var resultEl = document.getElementById('git-result');
+  resultEl.innerHTML = '<span style="color:var(--yellow)">Pulling...</span>';
+  fetch('/api/git/pull', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir: browseDir }),
+  })
+  .then(function(resp) { return resp.json(); })
+  .then(function(data) {
+    if (data.error) {
+      resultEl.innerHTML = '<span style="color:var(--red)">' + esc(data.error) + '</span>';
+    } else {
+      resultEl.innerHTML = '<span style="color:var(--green)">Pulled!</span>';
+      // Reload current file (content may have changed) and refresh directory
+      if (currentFile) openFile(currentFile);
+      loadDirectory(browseDir);
       setTimeout(function() { resultEl.innerHTML = ''; }, 2000);
     }
   })
